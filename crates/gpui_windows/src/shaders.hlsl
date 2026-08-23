@@ -1205,9 +1205,54 @@ SubpixelSpriteFragmentOutput subpixel_sprite_fragment(MonochromeSpriteFragmentIn
 }
 
 /*
-**
+**              External textures
+*/
+
+struct ExternalTextureSprite {
+    Bounds bounds;
+    Bounds content_mask;
+    Corners corner_radii;
+    float opacity;
+    float3 padding;
+};
+
+StructuredBuffer<ExternalTextureSprite> external_textures: register(t1);
+
+struct ExternalTextureVertexOutput {
+    nointerpolation uint texture_id: TEXCOORD0;
+    float4 position: SV_Position;
+    float2 uv: POSITION;
+    float4 clip_distance: SV_ClipDistance;
+};
+
+struct ExternalTextureFragmentInput {
+    nointerpolation uint texture_id: TEXCOORD0;
+    float4 position: SV_Position;
+    float2 uv: POSITION;
+};
+
+ExternalTextureVertexOutput external_texture_vertex(uint vertex_id: SV_VertexID, uint instance_id: SV_InstanceID) {
+    float2 unit_vertex = float2(float(vertex_id & 1u), 0.5 * float(vertex_id & 2u));
+    uint texture_id = batch_start_index + instance_id;
+    ExternalTextureSprite sprite = external_textures[texture_id];
+    ExternalTextureVertexOutput output;
+    output.position = to_device_position(unit_vertex, sprite.bounds);
+    output.uv = unit_vertex;
+    output.texture_id = texture_id;
+    output.clip_distance = distance_from_clip_rect(unit_vertex, sprite.bounds, sprite.content_mask);
+    return output;
+}
+
+float4 external_texture_fragment(ExternalTextureFragmentInput input): SV_Target {
+    ExternalTextureSprite sprite = external_textures[input.texture_id];
+    float4 color = t_sprite.Sample(s_sprite, input.uv);
+    float distance = quad_sdf(input.position.xy, sprite.bounds, sprite.corner_radii);
+    color.a *= sprite.opacity * saturate(0.5 - distance);
+    return color;
+}
+
+/*
 **              Polychrome sprites
-**
 */
 
 struct PolychromeSprite {

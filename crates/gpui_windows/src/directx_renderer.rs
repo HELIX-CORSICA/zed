@@ -92,6 +92,7 @@ struct DirectXRenderPipelines {
     mono_sprites: PipelineState<MonochromeSprite>,
     subpixel_sprites: PipelineState<SubpixelSprite>,
     poly_sprites: PipelineState<PolychromeSprite>,
+    external_textures: PipelineState<ExternalTextureSprite>,
 }
 
 struct DirectXGlobalElements {
@@ -372,6 +373,9 @@ impl DirectXRenderer {
                     self.draw_polychrome_sprites(texture_id, range.start, range.len())
                 }
                 PrimitiveBatch::Surfaces(range) => self.draw_surfaces(&scene.surfaces[range]),
+                PrimitiveBatch::ExternalTextures(range) => {
+                    self.draw_external_textures(&scene.external_textures[range])
+                }
             }
             .with_context(|| {
                 format!(
@@ -483,6 +487,19 @@ impl DirectXRenderer {
                 &devices.device,
                 &devices.device_context,
                 &scene.polychrome_sprites,
+            )?;
+        }
+
+        if !scene.external_textures.is_empty() {
+            let sprites: Vec<_> = scene
+                .external_textures
+                .iter()
+                .map(ExternalTextureSprite::from)
+                .collect();
+            self.pipelines.external_textures.update_buffer(
+                &devices.device,
+                &devices.device_context,
+                &sprites,
             )?;
         }
 
@@ -723,6 +740,61 @@ impl DirectXRenderer {
         Ok(())
     }
 
+    fn draw_external_textures(&mut self, textures: &[PaintExternalTexture]) -> Result<()> {
+        if textures.is_empty() {
+            return Ok(());
+        }
+        let devices = self.devices.as_ref().context("devices missing")?;
+        let device1: ID3D11Device1 = devices.device.cast().context("D3D11.1 device")?;
+        let sampler = [Some(
+            self.globals.sampler.clone().context("sampler missing")?,
+        )];
+        for (index, texture) in textures.iter().enumerate() {
+            let ExternalTextureSource::D3D11SharedHandle {
+                handle,
+                keyed_mutex,
+            } = &texture.texture.source;
+            anyhow::ensure!(*handle != 0, "external texture handle is null");
+            let native_texture: ID3D11Texture2D = unsafe {
+                device1.OpenSharedResource1(windows::Win32::Foundation::HANDLE(
+                    *handle as *mut std::ffi::c_void,
+                ))
+            }
+            .with_context(|| format!("opening external texture {}", texture.texture.id.0))?;
+            let mut view = None;
+            unsafe {
+                devices
+                    .device
+                    .CreateShaderResourceView(&native_texture, None, Some(&mut view))?
+            };
+            let view = view.context("external texture SRV missing")?;
+            let keyed_mutex = if *keyed_mutex {
+                Some(native_texture.cast::<IDXGIKeyedMutex>()?)
+            } else {
+                None
+            };
+            if let Some(mutex) = &keyed_mutex {
+                unsafe { mutex.AcquireSync(0, u32::MAX)? };
+            }
+            let draw_result = self.pipelines.external_textures.draw_range_with_texture(
+                &devices.device_context,
+                &[Some(view)],
+                self.globals
+                    .batch_params_buffer
+                    .as_ref()
+                    .context("batch params buffer missing")?,
+                &sampler,
+                index as u32,
+                1,
+            );
+            if let Some(mutex) = &keyed_mutex {
+                unsafe { mutex.ReleaseSync(1)? };
+            }
+            draw_result?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn gpu_specs(&self) -> Result<GpuSpecs> {
         let devices = self.devices.as_ref().context("devices missing")?;
         let desc = unsafe { devices.adapter.GetDesc1() }?;
@@ -900,6 +972,13 @@ impl DirectXRenderPipelines {
             16,
             create_blend_state(device)?,
         )?;
+        let external_textures = PipelineState::new(
+            device,
+            "external_texture_pipeline",
+            ShaderModule::ExternalTexture,
+            16,
+            create_blend_state(device)?,
+        )?;
 
         Ok(Self {
             shadow_pipeline,
@@ -910,6 +989,7 @@ impl DirectXRenderPipelines {
             mono_sprites,
             subpixel_sprites,
             poly_sprites,
+            external_textures,
         })
     }
 }
@@ -987,6 +1067,28 @@ struct BatchParams {
 }
 
 const _: () = assert!(std::mem::size_of::<BatchParams>() == 16);
+
+#[derive(Clone, Copy, Debug, Default)]
+#[repr(C, align(16))]
+struct ExternalTextureSprite {
+    bounds: Bounds<ScaledPixels>,
+    content_mask: Bounds<ScaledPixels>,
+    corner_radii: Corners<ScaledPixels>,
+    opacity: f32,
+    _padding: [f32; 3],
+}
+
+impl From<&PaintExternalTexture> for ExternalTextureSprite {
+    fn from(texture: &PaintExternalTexture) -> Self {
+        Self {
+            bounds: texture.bounds,
+            content_mask: texture.content_mask.bounds,
+            corner_radii: texture.corner_radii,
+            opacity: texture.opacity,
+            _padding: [0.0; 3],
+        }
+    }
+}
 
 struct PipelineState<T> {
     label: &'static str,
@@ -1619,6 +1721,7 @@ pub(crate) mod shader_resources {
         MonochromeSprite,
         SubpixelSprite,
         PolychromeSprite,
+        ExternalTexture,
         EmojiRasterization,
     }
 
@@ -1692,6 +1795,10 @@ pub(crate) mod shader_resources {
                 ShaderModule::PolychromeSprite => match target {
                     ShaderTarget::Vertex => POLYCHROME_SPRITE_VERTEX_BYTES,
                     ShaderTarget::Fragment => POLYCHROME_SPRITE_FRAGMENT_BYTES,
+                },
+                ShaderModule::ExternalTexture => match target {
+                    ShaderTarget::Vertex => EXTERNAL_TEXTURE_VERTEX_BYTES,
+                    ShaderTarget::Fragment => EXTERNAL_TEXTURE_FRAGMENT_BYTES,
                 },
                 ShaderModule::EmojiRasterization => match target {
                     ShaderTarget::Vertex => EMOJI_RASTERIZATION_VERTEX_BYTES,
@@ -1783,6 +1890,7 @@ pub(crate) mod shader_resources {
                 ShaderModule::MonochromeSprite => "monochrome_sprite",
                 ShaderModule::SubpixelSprite => "subpixel_sprite",
                 ShaderModule::PolychromeSprite => "polychrome_sprite",
+                ShaderModule::ExternalTexture => "external_texture",
                 ShaderModule::EmojiRasterization => "emoji_rasterization",
             }
         }
