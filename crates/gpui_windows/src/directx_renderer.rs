@@ -749,18 +749,35 @@ impl DirectXRenderer {
         let sampler = [Some(
             self.globals.sampler.clone().context("sampler missing")?,
         )];
+        // One open per distinct handle per call, not per primitive.
+        // `OpenSharedResource1` is a kernel transition: a backdrop drawn behind
+        // twenty panels opened the same texture twenty times a frame and cost
+        // ~340 ms/frame before this cache.
+        let mut opened: std::collections::HashMap<isize, (ID3D11Texture2D, Option<IDXGIKeyedMutex>)> =
+            std::collections::HashMap::new();
         for (index, texture) in textures.iter().enumerate() {
             let ExternalTextureSource::D3D11SharedHandle {
                 handle,
                 keyed_mutex,
             } = &texture.texture.source;
             anyhow::ensure!(*handle != 0, "external texture handle is null");
-            let native_texture: ID3D11Texture2D = unsafe {
-                device1.OpenSharedResource1(windows::Win32::Foundation::HANDLE(
-                    *handle as *mut std::ffi::c_void,
-                ))
+            if !opened.contains_key(handle) {
+                let native: ID3D11Texture2D = unsafe {
+                    device1.OpenSharedResource1(windows::Win32::Foundation::HANDLE(
+                        *handle as *mut std::ffi::c_void,
+                    ))
+                }
+                .with_context(|| format!("opening external texture {}", texture.texture.id.0))?;
+                let mutex = if *keyed_mutex {
+                    Some(native.cast::<IDXGIKeyedMutex>()?)
+                } else {
+                    None
+                };
+                opened.insert(*handle, (native, mutex));
             }
-            .with_context(|| format!("opening external texture {}", texture.texture.id.0))?;
+            let (native_texture, keyed_mutex) = &opened[handle];
+            let native_texture = native_texture.clone();
+            let keyed_mutex = keyed_mutex.clone();
             let mut view = None;
             unsafe {
                 devices
@@ -768,11 +785,6 @@ impl DirectXRenderer {
                     .CreateShaderResourceView(&native_texture, None, Some(&mut view))?
             };
             let view = view.context("external texture SRV missing")?;
-            let keyed_mutex = if *keyed_mutex {
-                Some(native_texture.cast::<IDXGIKeyedMutex>()?)
-            } else {
-                None
-            };
             if let Some(mutex) = &keyed_mutex {
                 unsafe { mutex.AcquireSync(0, u32::MAX)? };
             }
