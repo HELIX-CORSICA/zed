@@ -2,17 +2,19 @@ use crate::{CompositorGpuHint, WgpuAtlas, WgpuContext};
 use anyhow::{Context as _, Result};
 use bytemuck::{Pod, Zeroable};
 use gpui::{
-    AtlasTextureId, Background, Bounds, DevicePixels, GpuSpecs, Path, Point, PrimitiveBatch,
-    ScaledPixels, Scene, Size, get_gamma_correction_ratios,
+    AtlasTextureId, Background, Bounds, Corners, DevicePixels, GpuSpecs, PaintExternalTexture,
+    Path, Point, PrimitiveBatch, ScaledPixels, Scene, Size, get_gamma_correction_ratios,
 };
 use log::warn;
 #[cfg(not(target_family = "wasm"))]
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::num::NonZeroU64;
 use std::ops::Range;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
 const MAX_INSTANCE_BUFFER_SIZE: u64 = 256 * 1024 * 1024;
 
@@ -23,6 +25,7 @@ const INSTANCE_TEXTURE_TEXEL_SIZE: u64 = 16;
 const STORAGE_BUFFER_SHADERS: &str = concat!(
     include_str!("shaders.wgsl"),
     include_str!("shaders_storage.wgsl"),
+    include_str!("shaders_external.wgsl"),
 );
 
 /// Shader variant for WebGL2, which has no storage buffers: the shared shader
@@ -132,6 +135,9 @@ struct WgpuPipelines {
     poly_sprites: wgpu::RenderPipeline,
     #[allow(dead_code)]
     surfaces: wgpu::RenderPipeline,
+    /// `None` on the WebGL2 instance-data path, which has no storage buffers
+    /// and no external-texture producer.
+    external_textures: Option<wgpu::RenderPipeline>,
 }
 
 /// One frame allocation of instance data, ready to bind.
@@ -152,6 +158,74 @@ struct InstanceBindings {
     monochrome_sprites: InstanceBinding,
     subpixel_sprites: InstanceBinding,
     polychrome_sprites: InstanceBinding,
+    external_textures: InstanceBinding,
+}
+
+/// One instance of the external-texture quad. 64 bytes; the layout is mirrored
+/// by `ExternalTextureSprite` in `shaders_external.wgsl`, padding included.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ExternalTextureSprite {
+    bounds: Bounds<ScaledPixels>,
+    content_mask: Bounds<ScaledPixels>,
+    corner_radii: Corners<ScaledPixels>,
+    opacity: f32,
+    _padding: [f32; 3],
+}
+
+// Verified against naga's computed layout for the WGSL struct: 64 bytes, with
+// members at 0 / 16 / 32 / 48. A mismatch shears every instance after the
+// first, which looks like a rendering bug rather than a layout bug.
+const _: () = assert!(std::mem::size_of::<ExternalTextureSprite>() == 64);
+
+impl From<&PaintExternalTexture> for ExternalTextureSprite {
+    fn from(texture: &PaintExternalTexture) -> Self {
+        Self {
+            bounds: texture.bounds,
+            content_mask: texture.content_mask.bounds,
+            corner_radii: texture.corner_radii,
+            opacity: texture.opacity,
+            _padding: [0.0; 3],
+        }
+    }
+}
+
+/// Textures the producer has handed to this renderer, keyed by the token it
+/// carries in `ExternalTextureSource::Wgpu`.
+///
+/// `gpui` itself cannot name a `wgpu::Texture` — the core crate has no wgpu
+/// dependency — so the scene primitive carries an opaque token and the
+/// resolution happens here. Producer and renderer share one `wgpu::Device` on
+/// this backend, so there is nothing to import: the texture is bound directly.
+static EXTERNAL_TEXTURES: LazyLock<Mutex<HashMap<usize, wgpu::Texture>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Registers a producer-owned texture and returns its token. The producer must
+/// keep the texture alive until it calls [`unregister_external_texture`].
+pub fn register_external_texture(texture: wgpu::Texture) -> usize {
+    static NEXT_TOKEN: AtomicUsize = AtomicUsize::new(1);
+    let token = NEXT_TOKEN.fetch_add(1, Ordering::Relaxed);
+    EXTERNAL_TEXTURES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(token, texture);
+    token
+}
+
+/// Drops this renderer's reference to a registered texture.
+pub fn unregister_external_texture(token: usize) {
+    EXTERNAL_TEXTURES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .remove(&token);
+}
+
+fn external_texture(token: usize) -> Option<wgpu::Texture> {
+    EXTERNAL_TEXTURES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(&token)
+        .cloned()
 }
 
 struct WgpuBindGroupLayouts {
@@ -1049,10 +1123,25 @@ impl WgpuRenderer {
             &layouts.surfaces,
             None,
             wgpu::PrimitiveTopology::TriangleStrip,
-            &[Some(color_target)],
+            &[Some(color_target.clone())],
             1,
             &shader_module,
         );
+
+        let external_textures = (!uses_webgl_instance_data).then(|| {
+            create_pipeline(
+                "external_textures",
+                "vs_external_texture",
+                "fs_external_texture",
+                &layouts.globals,
+                &layouts.instances,
+                Some(&layouts.texture),
+                wgpu::PrimitiveTopology::TriangleStrip,
+                &[Some(color_target.clone())],
+                1,
+                &shader_module,
+            )
+        });
 
         WgpuPipelines {
             quads,
@@ -1064,6 +1153,7 @@ impl WgpuRenderer {
             subpixel_sprites,
             poly_sprites,
             surfaces,
+            external_textures,
         }
     }
 
@@ -1529,7 +1619,12 @@ impl WgpuRenderer {
                     // Surfaces are macOS-only for video playback and are not
                     // implemented by the WGPU renderer.
                     PrimitiveBatch::Surfaces(_surfaces) => {}
-                    PrimitiveBatch::ExternalTextures(_textures) => {}
+                    PrimitiveBatch::ExternalTextures(range) => self.draw_external_textures(
+                        &scene.external_textures[range.clone()],
+                        &instance_bindings,
+                        range,
+                        &mut pass,
+                    )?,
                 }
             }
         }
@@ -1576,6 +1671,18 @@ impl WgpuRenderer {
                 instance_offset,
                 &scene.polychrome_sprites,
             )?,
+            external_textures: {
+                let sprites: Vec<ExternalTextureSprite> = scene
+                    .external_textures
+                    .iter()
+                    .map(ExternalTextureSprite::from)
+                    .collect();
+                self.write_instance_binding(
+                    "external_textures_bind_group",
+                    instance_offset,
+                    &sprites,
+                )?
+            },
         })
     }
 
@@ -1645,6 +1752,48 @@ impl WgpuRenderer {
             sprite_instances.first_instance + range.start
                 ..sprite_instances.first_instance + range.end,
         );
+    }
+
+    /// Draws producer-owned textures. Every failure is loud: a viewport that
+    /// silently stays black is the bug this whole path exists to avoid, so an
+    /// unresolvable token is an error rather than a skipped draw.
+    fn draw_external_textures(
+        &self,
+        textures: &[PaintExternalTexture],
+        instance_bindings: &InstanceBindings,
+        range: Range<usize>,
+        pass: &mut wgpu::RenderPass<'_>,
+    ) -> Result<()> {
+        if textures.is_empty() {
+            return Ok(());
+        }
+        let pipeline = self
+            .resources()
+            .pipelines
+            .external_textures
+            .as_ref()
+            .context("external textures need storage buffers; unavailable on WebGL2")?;
+
+        for (offset, texture) in textures.iter().enumerate() {
+            let token = texture
+                .texture
+                .source
+                .wgpu_token()
+                .context("external texture source is not a wgpu token")?;
+            let source = external_texture(token)
+                .with_context(|| format!("external texture {token} is not registered"))?;
+            let view = source.create_view(&wgpu::TextureViewDescriptor::default());
+            let bind_group = self.create_texture_bind_group("external_texture_bind_group", &view);
+
+            let instance = (range.start + offset) as u32;
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, &self.resources().globals_bind_group, &[]);
+            pass.set_bind_group(1, &instance_bindings.external_textures.bind_group, &[]);
+            pass.set_bind_group(2, &bind_group, &[]);
+            let first = instance_bindings.external_textures.first_instance + instance;
+            pass.draw(0..4, first..first + 1);
+        }
+        Ok(())
     }
 
     unsafe fn instance_bytes<T>(instances: &[T]) -> &[u8] {

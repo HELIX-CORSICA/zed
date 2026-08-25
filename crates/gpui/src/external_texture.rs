@@ -50,6 +50,22 @@ pub struct ExternalTexture {
     pub source: ExternalTextureSource,
 }
 
+impl ExternalTextureSource {
+    /// The wgpu registry token, when this source is one.
+    ///
+    /// Returning `None` elsewhere lets the wgpu renderer keep a single code
+    /// path that still type-checks on every host, instead of a `cfg` body that
+    /// only ever compiles on Linux.
+    pub fn wgpu_token(&self) -> Option<usize> {
+        match self {
+            #[cfg(target_os = "linux")]
+            Self::Wgpu(token) => Some(*token),
+            #[allow(unreachable_patterns)]
+            _ => None,
+        }
+    }
+}
+
 impl ExternalTexture {
     /// Creates an external texture and assigns a fresh process-local id.
     pub fn new(source: ExternalTextureSource, size: Size<DevicePixels>) -> Self {
