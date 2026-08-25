@@ -1,0 +1,26 @@
+name: external texture check
+
+# Compile-checks the two external-texture arms on hosts this fork's maintainers
+# do not have. Windows is covered locally; macOS and Linux are not, and neither
+# can be cross-checked from Windows (no Apple/Linux C toolchain: `cc` and
+# `x86_64-linux-gnu-gcc` are missing, and gpui_apple's build.rs is gated on a
+# macOS *host*, so shaders.metal would not compile either way).
+
+on:
+  push:
+    branches: [external-texture-wgpu-metal]
+  workflow_dispatch:
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - run: cargo check --locked -p gpui_apple -p gpui
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - run: ./script/linux
+      - run: cargo check --locked -p gpui_wgpu -p gpui
