@@ -426,6 +426,17 @@ impl MetalRenderer {
         &self.sprite_atlas
     }
 
+    /// The `MTLDevice` this renderer draws on.
+    ///
+    /// An external producer must build its own device *from this one*
+    /// (`wgpu_hal::metal::Device::device_from_raw`) rather than creating a
+    /// second: only textures owned by this device can be sampled by
+    /// `draw_external_textures`, and a second device's texture would draw
+    /// nothing at all.
+    pub fn device(&self) -> &metal::Device {
+        &self.device
+    }
+
     pub fn set_presents_with_transaction(&mut self, presents_with_transaction: bool) {
         self.presents_with_transaction = presents_with_transaction;
         if let Some(layer) = &self.layer {
