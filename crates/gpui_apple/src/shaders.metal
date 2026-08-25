@@ -758,8 +758,16 @@ vertex ExternalTextureVertexOutput external_texture_vertex(
   float4 clip_distance = distance_from_clip_rect(unit_vertex, sprite.bounds,
                                                  sprite.content_mask.bounds);
   // UV is where this vertex falls inside `tex_bounds`, not inside the quad.
-  float2 point = sprite.bounds.origin + unit_vertex * sprite.bounds.size;
-  float2 uv = (point - sprite.tex_bounds.origin) / sprite.tex_bounds.size;
+  // cbindgen emits Bounds_ScaledPixels as nested structs, so the components
+  // have to be spelled out — there is no float2 to operate on directly.
+  float2 point =
+      float2(sprite.bounds.origin.x, sprite.bounds.origin.y) +
+      unit_vertex * float2(sprite.bounds.size.width, sprite.bounds.size.height);
+  float2 tex_origin =
+      float2(sprite.tex_bounds.origin.x, sprite.tex_bounds.origin.y);
+  float2 tex_size =
+      float2(sprite.tex_bounds.size.width, sprite.tex_bounds.size.height);
+  float2 uv = (point - tex_origin) / tex_size;
   return ExternalTextureVertexOutput{
       device_position,
       uv,
