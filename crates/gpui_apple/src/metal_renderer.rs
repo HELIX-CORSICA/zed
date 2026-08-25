@@ -50,6 +50,21 @@ thread_local! {
         RefCell::new(HashMap::new());
 }
 
+/// The `MTLDevice` this renderer draws on, for an external producer that must
+/// render into textures this renderer can sample.
+///
+/// A producer that creates its own device instead would hand over textures the
+/// renderer cannot draw — nothing on screen, no error. Build the producer's
+/// device from this one with `wgpu_hal::metal::Device::device_from_raw`.
+/// `None` before the first renderer exists.
+pub fn host_device() -> Option<metal::Device> {
+    HOST_DEVICE.with(|slot| slot.borrow().clone())
+}
+
+thread_local! {
+    static HOST_DEVICE: RefCell<Option<metal::Device>> = const { RefCell::new(None) };
+}
+
 /// Registers a producer-owned `MTLTexture` and returns its token. The texture
 /// must live on the same `MTLDevice` as this renderer — build the producer's
 /// wgpu device from it (`wgpu_hal::metal::Device::device_from_raw`) rather than
@@ -231,6 +246,12 @@ impl MetalRenderer {
     }
 
     fn create_device() -> metal::Device {
+        let device = Self::pick_device();
+        HOST_DEVICE.with(|slot| *slot.borrow_mut() = Some(device.clone()));
+        device
+    }
+
+    fn pick_device() -> metal::Device {
         // Prefer low‐power integrated GPUs on Intel Mac. On Apple
         // Silicon, there is only ever one GPU, so this is equivalent to
         // `metal::Device::system_default()`.

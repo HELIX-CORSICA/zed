@@ -129,11 +129,14 @@ impl WgpuContext {
         );
 
         let backend = WgpuBackend::Native(adapter.get_info().backend);
+        let device = Arc::new(device);
+        let queue = Arc::new(queue);
+        publish_host_device(&instance, &adapter, &device, &queue);
         Ok(Self {
             instance,
             adapter,
-            device: Arc::new(device),
-            queue: Arc::new(queue),
+            device,
+            queue,
             backend,
             dual_source_blending,
             color_texture_format,
@@ -603,4 +606,43 @@ mod tests {
             parse_pci_id(&format!("{:#X}", 0x1234)).unwrap(),
         );
     }
+}
+
+/// The device this renderer draws on, for an external producer that must
+/// render into textures this renderer can sample.
+///
+/// A producer that builds its own device instead would hand over textures the
+/// renderer cannot draw — nothing on screen, no error. Set when the context is
+/// created; read from the same thread, which is the only one that renders.
+type HostDevice = (
+    wgpu::Instance,
+    wgpu::Adapter,
+    Arc<wgpu::Device>,
+    Arc<wgpu::Queue>,
+);
+
+thread_local! {
+    static HOST_DEVICE: std::cell::RefCell<Option<HostDevice>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn publish_host_device(
+    instance: &wgpu::Instance,
+    adapter: &wgpu::Adapter,
+    device: &Arc<wgpu::Device>,
+    queue: &Arc<wgpu::Queue>,
+) {
+    let entry = (
+        instance.clone(),
+        adapter.clone(),
+        device.clone(),
+        queue.clone(),
+    );
+    HOST_DEVICE.with(|slot| *slot.borrow_mut() = Some(entry));
+}
+
+/// `None` before the first window exists.
+pub fn host_device() -> Option<HostDevice> {
+    HOST_DEVICE.with(|slot| slot.borrow().clone())
 }
