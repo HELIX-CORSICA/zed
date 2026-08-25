@@ -4,12 +4,13 @@
 // buffers and no external-texture producer, so the pipeline is not created
 // there and these entry points must not exist in that module.
 
-// 64 bytes, matching the Rust `ExternalTextureSprite`. The tail padding is
+// 80 bytes, matching the Rust `ExternalTextureSprite`. The tail padding is
 // three scalars, not a `vec3<f32>`: a vec3 aligns to 16 in WGSL, which would
 // silently grow the struct to 80 bytes and shear every instance after the
 // first.
 struct ExternalTextureSprite {
     bounds: Bounds,
+    tex_bounds: Bounds,
     content_mask: Bounds,
     corner_radii: Corners,
     opacity: f32,
@@ -41,8 +42,10 @@ fn vs_external_texture(
 
     var out = ExternalTextureVarying();
     out.position = to_device_position(unit_vertex, sprite.bounds);
-    // The producer owns the whole quad, so the unit vertex is the UV.
-    out.uv = unit_vertex;
+    // UV is where this vertex falls inside `tex_bounds`, not inside the quad:
+    // several primitives can window onto one full-viewport texture.
+    let point = sprite.bounds.origin + unit_vertex * sprite.bounds.size;
+    out.uv = (point - sprite.tex_bounds.origin) / sprite.tex_bounds.size;
     out.sprite_id = instance_id;
     out.clip_distances = distance_from_clip_rect(unit_vertex, sprite.bounds, sprite.content_mask);
     return out;

@@ -824,6 +824,8 @@ impl From<PaintSurface> for Primitive {
 pub struct PaintExternalTexture {
     pub order: DrawOrder,
     pub bounds: Bounds<ScaledPixels>,
+    /// The rect the texture is laid out over. `bounds` is the drawn part of it.
+    pub tex_bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
     pub corner_radii: Corners<ScaledPixels>,
     pub opacity: f32,
@@ -840,13 +842,14 @@ impl From<PaintExternalTexture> for Primitive {
 ///
 /// `PaintExternalTexture` carries an enum and cannot cross into a shader; this
 /// is its shader-facing shape, exported to `scene.h` by cbindgen for the Metal
-/// shaders. 64 bytes: the tail padding is three scalars because a `float3`
+/// shaders. 80 bytes: the tail padding is three scalars because a `float3`
 /// would align to 16 and shear every instance after the first.
 #[derive(Copy, Clone, Debug)]
 #[repr(C)]
 #[expect(missing_docs)]
 pub struct ExternalTextureSprite {
     pub bounds: Bounds<ScaledPixels>,
+    pub tex_bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
     pub corner_radii: Corners<ScaledPixels>,
     pub opacity: f32,
@@ -855,10 +858,16 @@ pub struct ExternalTextureSprite {
     pub pad_2: f32,
 }
 
+// Verified against naga's computed layout for the WGSL struct. A mismatch
+// shears every instance after the first, which reads as a rendering bug rather
+// than a layout bug.
+const _: () = assert!(std::mem::size_of::<ExternalTextureSprite>() == 80);
+
 impl From<&PaintExternalTexture> for ExternalTextureSprite {
     fn from(texture: &PaintExternalTexture) -> Self {
         Self {
             bounds: texture.bounds,
+            tex_bounds: texture.tex_bounds,
             content_mask: texture.content_mask,
             corner_radii: texture.corner_radii,
             opacity: texture.opacity,

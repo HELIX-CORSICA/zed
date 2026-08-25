@@ -2,8 +2,9 @@ use crate::{CompositorGpuHint, WgpuAtlas, WgpuContext};
 use anyhow::{Context as _, Result};
 use bytemuck::{Pod, Zeroable};
 use gpui::{
-    AtlasTextureId, Background, Bounds, Corners, DevicePixels, GpuSpecs, PaintExternalTexture,
-    Path, Point, PrimitiveBatch, ScaledPixels, Scene, Size, get_gamma_correction_ratios,
+    AtlasTextureId, Background, Bounds, DevicePixels, ExternalTextureSprite, GpuSpecs,
+    PaintExternalTexture, Path, Point, PrimitiveBatch, ScaledPixels, Scene, Size,
+    get_gamma_correction_ratios,
 };
 use log::warn;
 #[cfg(not(target_family = "wasm"))]
@@ -159,35 +160,6 @@ struct InstanceBindings {
     subpixel_sprites: InstanceBinding,
     polychrome_sprites: InstanceBinding,
     external_textures: InstanceBinding,
-}
-
-/// One instance of the external-texture quad. 64 bytes; the layout is mirrored
-/// by `ExternalTextureSprite` in `shaders_external.wgsl`, padding included.
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct ExternalTextureSprite {
-    bounds: Bounds<ScaledPixels>,
-    content_mask: Bounds<ScaledPixels>,
-    corner_radii: Corners<ScaledPixels>,
-    opacity: f32,
-    _padding: [f32; 3],
-}
-
-// Verified against naga's computed layout for the WGSL struct: 64 bytes, with
-// members at 0 / 16 / 32 / 48. A mismatch shears every instance after the
-// first, which looks like a rendering bug rather than a layout bug.
-const _: () = assert!(std::mem::size_of::<ExternalTextureSprite>() == 64);
-
-impl From<&PaintExternalTexture> for ExternalTextureSprite {
-    fn from(texture: &PaintExternalTexture) -> Self {
-        Self {
-            bounds: texture.bounds,
-            content_mask: texture.content_mask.bounds,
-            corner_radii: texture.corner_radii,
-            opacity: texture.opacity,
-            _padding: [0.0; 3],
-        }
-    }
 }
 
 /// Textures the producer has handed to this renderer, keyed by the token it

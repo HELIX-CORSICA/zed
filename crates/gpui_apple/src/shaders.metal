@@ -757,10 +757,12 @@ vertex ExternalTextureVertexOutput external_texture_vertex(
       to_device_position(unit_vertex, sprite.bounds, viewport_size);
   float4 clip_distance = distance_from_clip_rect(unit_vertex, sprite.bounds,
                                                  sprite.content_mask.bounds);
-  // The producer owns the whole quad, so the unit vertex is the UV.
+  // UV is where this vertex falls inside `tex_bounds`, not inside the quad.
+  float2 point = sprite.bounds.origin + unit_vertex * sprite.bounds.size;
+  float2 uv = (point - sprite.tex_bounds.origin) / sprite.tex_bounds.size;
   return ExternalTextureVertexOutput{
       device_position,
-      unit_vertex,
+      uv,
       sprite_id,
       {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w}};
 }

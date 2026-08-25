@@ -4614,20 +4614,33 @@ impl Window {
     /// platforms without an importer the primitive is retained in the scene
     /// and skipped by that renderer, allowing callers to keep a normal
     /// readback fallback.
-    pub fn paint_external_texture(&mut self, bounds: Bounds<Pixels>, texture: &ExternalTexture) {
+    /// `texture_bounds` is the rect the texture is laid out over, in the same
+    /// space as `bounds`; `bounds` is the part of it that is drawn. Pass the
+    /// same rect twice to fill. Splitting the two is what lets several
+    /// primitives window onto one full-viewport texture — a backdrop — the way
+    /// [`Self::paint_image`] does with `image_bounds`.
+    pub fn paint_external_texture(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        texture_bounds: Bounds<Pixels>,
+        corner_radii: Corners<Pixels>,
+        texture: &ExternalTexture,
+    ) {
         use crate::PaintExternalTexture;
 
         self.invalidator.debug_assert_paint();
 
         let bounds = self.snap_bounds(bounds);
+        let tex_bounds = self.snap_bounds(texture_bounds);
         let content_mask = self.snapped_content_mask();
-        let corner_radii = Corners::default();
+        let corner_radii = corner_radii.scale(self.scale_factor());
         let opacity = self.element_opacity();
         self.next_frame
             .scene
             .insert_primitive(PaintExternalTexture {
                 order: 0,
                 bounds,
+                tex_bounds,
                 content_mask,
                 corner_radii,
                 opacity,

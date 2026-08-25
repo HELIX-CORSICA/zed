@@ -1068,28 +1068,6 @@ struct BatchParams {
 
 const _: () = assert!(std::mem::size_of::<BatchParams>() == 16);
 
-#[derive(Clone, Copy, Debug, Default)]
-#[repr(C, align(16))]
-struct ExternalTextureSprite {
-    bounds: Bounds<ScaledPixels>,
-    content_mask: Bounds<ScaledPixels>,
-    corner_radii: Corners<ScaledPixels>,
-    opacity: f32,
-    _padding: [f32; 3],
-}
-
-impl From<&PaintExternalTexture> for ExternalTextureSprite {
-    fn from(texture: &PaintExternalTexture) -> Self {
-        Self {
-            bounds: texture.bounds,
-            content_mask: texture.content_mask.bounds,
-            corner_radii: texture.corner_radii,
-            opacity: texture.opacity,
-            _padding: [0.0; 3],
-        }
-    }
-}
-
 struct PipelineState<T> {
     label: &'static str,
     vertex: ID3D11VertexShader,

@@ -1210,6 +1210,7 @@ SubpixelSpriteFragmentOutput subpixel_sprite_fragment(MonochromeSpriteFragmentIn
 
 struct ExternalTextureSprite {
     Bounds bounds;
+    Bounds tex_bounds;
     Bounds content_mask;
     Corners corner_radii;
     float opacity;
@@ -1237,7 +1238,8 @@ ExternalTextureVertexOutput external_texture_vertex(uint vertex_id: SV_VertexID,
     ExternalTextureSprite sprite = external_textures[texture_id];
     ExternalTextureVertexOutput output;
     output.position = to_device_position(unit_vertex, sprite.bounds);
-    output.uv = unit_vertex;
+    float2 point = sprite.bounds.origin + unit_vertex * sprite.bounds.size;
+    output.uv = (point - sprite.tex_bounds.origin) / sprite.tex_bounds.size;
     output.texture_id = texture_id;
     output.clip_distance = distance_from_clip_rect(unit_vertex, sprite.bounds, sprite.content_mask);
     return output;
