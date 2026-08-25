@@ -150,6 +150,7 @@ mod tests {
         scene.insert_primitive(crate::PaintExternalTexture {
             order: 0,
             bounds,
+            tex_bounds: bounds,
             content_mask: crate::ContentMask { bounds: clip },
             corner_radii: crate::Corners::default(),
             opacity: 1.0,
@@ -164,5 +165,60 @@ mod tests {
             crate::Primitive::ExternalTexture(scene.external_textures.first().unwrap().clone());
         assert_eq!(primitive.bounds(), &bounds);
         assert_eq!(primitive.content_mask().bounds, clip);
+    }
+
+    /// A scene with several external textures batches them into ranges that do
+    /// NOT start at zero. A renderer must therefore index
+    /// `scene.external_textures` by `range.start + i`, not by the offset inside
+    /// the batch: getting that wrong draws one primitive with another's bounds,
+    /// which is invisible while a single external texture exists.
+    #[cfg(windows)]
+    #[test]
+    fn external_texture_batches_do_not_all_start_at_zero() {
+        let source = ExternalTextureSource::D3D11SharedHandle {
+            handle: 17,
+            keyed_mutex: false,
+        };
+        let mask = crate::ContentMask {
+            bounds: crate::Bounds {
+                origin: crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
+                size: crate::size(crate::ScaledPixels(1000.0), crate::ScaledPixels(1000.0)),
+            },
+        };
+        let mut scene = crate::Scene::default();
+        for i in 0..3 {
+            let offset = crate::ScaledPixels(i as f32 * 100.0);
+            scene.insert_primitive(crate::PaintExternalTexture {
+                order: 0,
+                bounds: crate::Bounds {
+                    origin: crate::point(offset, offset),
+                    size: crate::size(crate::ScaledPixels(50.0), crate::ScaledPixels(50.0)),
+                },
+                tex_bounds: mask.bounds,
+                content_mask: mask,
+                corner_radii: crate::Corners::default(),
+                opacity: 1.0,
+                texture: ExternalTexture::new(
+                    source.clone(),
+                    size(DevicePixels(16), DevicePixels(8)),
+                ),
+            });
+        }
+        scene.finish();
+
+        let covered: Vec<_> = scene
+            .batches()
+            .filter_map(|batch| match batch {
+                crate::PrimitiveBatch::ExternalTextures(range) => Some(range),
+                _ => None,
+            })
+            .collect();
+        let total: usize = covered.iter().map(|r| r.len()).sum();
+        assert_eq!(total, 3, "every external texture must be drawn exactly once");
+        assert_eq!(
+            covered.last().expect("a batch").end,
+            3,
+            "the last batch must reach the end of scene.external_textures"
+        );
     }
 }
