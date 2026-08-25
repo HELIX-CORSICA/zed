@@ -7,8 +7,8 @@ use cocoa::{
     quartzcore::AutoresizingMask,
 };
 use gpui::{
-    AtlasTextureId, Background, Bounds, ContentMask, DevicePixels, PaintSurface, Path, Point,
-    PrimitiveBatch, ScaledPixels, Scene, Size, point, size,
+    AtlasTextureId, Background, Bounds, ContentMask, DevicePixels, ExternalTextureSprite,
+    PaintSurface, Path, Point, PrimitiveBatch, ScaledPixels, Scene, Size, point, size,
 };
 #[cfg(any(test, feature = "test-support"))]
 use image::RgbaImage;
@@ -25,7 +25,50 @@ use metal::{
 use objc::{self, msg_send, sel, sel_impl};
 use parking_lot::Mutex;
 
-use std::{cell::Cell, ffi::c_void, mem, mem::MaybeUninit, ops::Range, ptr, slice, sync::Arc};
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    ffi::c_void,
+    mem,
+    mem::MaybeUninit,
+    ops::Range,
+    ptr, slice,
+    sync::Arc,
+    sync::atomic::{AtomicUsize, Ordering},
+};
+
+/// Textures a producer has handed to this renderer, keyed by the token carried
+/// in `ExternalTextureSource::MetalTexture`.
+///
+/// `gpui` cannot name an `MTLTexture` — the core crate has no Metal dependency
+/// — so the scene primitive carries an opaque token and resolution happens
+/// here. Thread-local rather than a `static`: the producer registers from the
+/// window's event-loop thread, which is the only thread that draws, and
+/// `metal::Texture` makes no `Sync` promise.
+thread_local! {
+    static EXTERNAL_TEXTURES: RefCell<HashMap<usize, metal::Texture>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Registers a producer-owned `MTLTexture` and returns its token. The texture
+/// must live on the same `MTLDevice` as this renderer — build the producer's
+/// wgpu device from it (`wgpu_hal::metal::Device::device_from_raw`) rather than
+/// creating a second device, or the draw samples another device's memory.
+pub fn register_external_texture(texture: metal::Texture) -> usize {
+    static NEXT_TOKEN: AtomicUsize = AtomicUsize::new(1);
+    let token = NEXT_TOKEN.fetch_add(1, Ordering::Relaxed);
+    EXTERNAL_TEXTURES.with(|textures| textures.borrow_mut().insert(token, texture));
+    token
+}
+
+/// Drops this renderer's reference to a registered texture.
+pub fn unregister_external_texture(token: usize) {
+    EXTERNAL_TEXTURES.with(|textures| textures.borrow_mut().remove(&token));
+}
+
+fn external_texture(token: usize) -> Option<metal::Texture> {
+    EXTERNAL_TEXTURES.with(|textures| textures.borrow().get(&token).cloned())
+}
 
 // Exported to metal
 pub(crate) type PointF = gpui::Point<f32>;
@@ -125,6 +168,7 @@ pub struct MetalRenderer {
     underlines_pipeline_state: metal::RenderPipelineState,
     monochrome_sprites_pipeline_state: metal::RenderPipelineState,
     polychrome_sprites_pipeline_state: metal::RenderPipelineState,
+    external_textures_pipeline_state: metal::RenderPipelineState,
     surfaces_pipeline_state: metal::RenderPipelineState,
     unit_vertices: metal::Buffer,
     #[allow(clippy::arc_with_non_send_sync)]
@@ -315,6 +359,15 @@ impl MetalRenderer {
             "polychrome_sprite_fragment",
             MTLPixelFormat::BGRA8Unorm,
         );
+
+        let external_textures_pipeline_state = build_pipeline_state(
+            &device,
+            &library,
+            "external_textures",
+            "external_texture_vertex",
+            "external_texture_fragment",
+            MTLPixelFormat::BGRA8Unorm,
+        );
         let surfaces_pipeline_state = build_pipeline_state(
             &device,
             &library,
@@ -344,6 +397,7 @@ impl MetalRenderer {
             underlines_pipeline_state,
             monochrome_sprites_pipeline_state,
             polychrome_sprites_pipeline_state,
+            external_textures_pipeline_state,
             surfaces_pipeline_state,
             unit_vertices,
             instance_buffer_pool,
@@ -731,7 +785,13 @@ impl MetalRenderer {
                     viewport_size,
                     command_encoder,
                 ),
-                PrimitiveBatch::ExternalTextures(_textures) => {}
+                PrimitiveBatch::ExternalTextures(range) => self.draw_external_textures(
+                    &scene.external_textures[range.clone()],
+                    range,
+                    instance_bindings,
+                    viewport_size,
+                    command_encoder,
+                ),
                 PrimitiveBatch::SubpixelSprites { .. } => unreachable!(),
             }
         }
@@ -1116,6 +1176,65 @@ impl MetalRenderer {
         );
     }
 
+    /// Draws producer-owned textures. Each is registered on this renderer's own
+    /// `MTLDevice`, so there is nothing to import — the token resolves straight
+    /// to an `MTLTexture`. An unresolvable token draws nothing for that
+    /// primitive rather than sampling stale memory; the producer learns of it
+    /// through its own registration bookkeeping.
+    fn draw_external_textures(
+        &self,
+        textures: &[gpui::PaintExternalTexture],
+        range: Range<usize>,
+        instance_bindings: &InstanceBindings,
+        viewport_size: Size<DevicePixels>,
+        command_encoder: &metal::RenderCommandEncoderRef,
+    ) {
+        if textures.is_empty() {
+            return;
+        }
+        command_encoder.set_render_pipeline_state(&self.external_textures_pipeline_state);
+        command_encoder.set_vertex_buffer(
+            SpriteInputIndex::Vertices as u64,
+            Some(&self.unit_vertices),
+            0,
+        );
+        command_encoder.set_vertex_buffer(
+            SpriteInputIndex::Sprites as u64,
+            Some(&instance_bindings.external_textures.buffer),
+            instance_bindings.external_textures.offset as u64,
+        );
+        command_encoder.set_vertex_bytes(
+            SpriteInputIndex::ViewportSize as u64,
+            mem::size_of_val(&viewport_size) as u64,
+            &viewport_size as *const Size<DevicePixels> as *const _,
+        );
+        command_encoder.set_fragment_buffer(
+            SpriteInputIndex::Sprites as u64,
+            Some(&instance_bindings.external_textures.buffer),
+            instance_bindings.external_textures.offset as u64,
+        );
+
+        for (offset, texture) in textures.iter().enumerate() {
+            let Some(token) = texture.texture.source.metal_token() else {
+                log::error!("external texture source is not a Metal token");
+                continue;
+            };
+            let Some(native) = external_texture(token) else {
+                log::error!("external texture {token} is not registered");
+                continue;
+            };
+            command_encoder
+                .set_fragment_texture(SpriteInputIndex::AtlasTexture as u64, Some(&native));
+            command_encoder.draw_primitives_instanced_base_instance(
+                metal::MTLPrimitiveType::Triangle,
+                0,
+                6,
+                1,
+                (range.start + offset) as u64,
+            );
+        }
+    }
+
     fn draw_surfaces(
         &mut self,
         surfaces: &[PaintSurface],
@@ -1386,6 +1505,7 @@ struct InstanceBindings {
     underlines: InstanceBinding,
     monochrome_sprites: InstanceBinding,
     polychrome_sprites: InstanceBinding,
+    external_textures: InstanceBinding,
     surfaces: InstanceBinding,
 }
 
@@ -1396,6 +1516,8 @@ fn write_instances(scene: &Scene, writer: &mut InstanceBufferWriter) -> Result<I
         underlines: writer.write(&scene.underlines)?,
         monochrome_sprites: writer.write(&scene.monochrome_sprites)?,
         polychrome_sprites: writer.write(&scene.polychrome_sprites)?,
+        external_textures: writer
+            .write_iter(scene.external_textures.iter().map(ExternalTextureSprite::from))?,
         surfaces: writer.write_iter(scene.surfaces.iter().map(|surface| SurfaceBounds {
             bounds: surface.bounds,
             content_mask: surface.content_mask,

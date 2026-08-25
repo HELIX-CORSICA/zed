@@ -26,10 +26,14 @@ pub enum ExternalTextureSource {
         /// Whether the resource is protected by a keyed mutex.
         keyed_mutex: bool,
     },
-    /// An IOSurface-backed texture. The platform renderer owns the retain /
-    /// release boundary for the native reference.
+    /// A token for an `MTLTexture` registered with the Metal renderer.
+    ///
+    /// The producer builds its wgpu device *on GPUI's own `MTLDevice`*, so the
+    /// texture needs no import and no IOSurface round-trip — but `gpui` cannot
+    /// name a Metal type, so the identity crosses as a token exactly like the
+    /// wgpu one.
     #[cfg(target_os = "macos")]
-    IoSurface(*mut std::ffi::c_void),
+    MetalTexture(usize),
     /// An opaque wgpu texture token. The Linux renderer replaces this token
     /// with the device-local `wgpu::Texture` before drawing.
     #[cfg(target_os = "linux")]
@@ -60,6 +64,17 @@ impl ExternalTextureSource {
         match self {
             #[cfg(target_os = "linux")]
             Self::Wgpu(token) => Some(*token),
+            #[allow(unreachable_patterns)]
+            _ => None,
+        }
+    }
+
+    /// The Metal registry token, when this source is one. Same single-code-path
+    /// reason as [`Self::wgpu_token`].
+    pub fn metal_token(&self) -> Option<usize> {
+        match self {
+            #[cfg(target_os = "macos")]
+            Self::MetalTexture(token) => Some(*token),
             #[allow(unreachable_patterns)]
             _ => None,
         }
@@ -102,7 +117,7 @@ mod tests {
             keyed_mutex: true,
         };
         #[cfg(target_os = "macos")]
-        let source = ExternalTextureSource::IoSurface(std::ptr::null_mut());
+        let source = ExternalTextureSource::MetalTexture(17);
         #[cfg(target_os = "linux")]
         let source = ExternalTextureSource::Wgpu(17);
         #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]

@@ -61,6 +61,7 @@ mod macos_build {
             "PathSprite".into(),
             "SurfaceInputIndex".into(),
             "SurfaceBounds".into(),
+            "ExternalTextureSprite".into(),
             "TransformationMatrix".into(),
         ]);
         config.no_includes = true;

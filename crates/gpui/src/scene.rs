@@ -836,6 +836,39 @@ impl From<PaintExternalTexture> for Primitive {
     }
 }
 
+/// The flat instance a renderer uploads for one external texture quad.
+///
+/// `PaintExternalTexture` carries an enum and cannot cross into a shader; this
+/// is its shader-facing shape, exported to `scene.h` by cbindgen for the Metal
+/// shaders. 64 bytes: the tail padding is three scalars because a `float3`
+/// would align to 16 and shear every instance after the first.
+#[derive(Copy, Clone, Debug)]
+#[repr(C)]
+#[expect(missing_docs)]
+pub struct ExternalTextureSprite {
+    pub bounds: Bounds<ScaledPixels>,
+    pub content_mask: ContentMask<ScaledPixels>,
+    pub corner_radii: Corners<ScaledPixels>,
+    pub opacity: f32,
+    pub pad_0: f32,
+    pub pad_1: f32,
+    pub pad_2: f32,
+}
+
+impl From<&PaintExternalTexture> for ExternalTextureSprite {
+    fn from(texture: &PaintExternalTexture) -> Self {
+        Self {
+            bounds: texture.bounds,
+            content_mask: texture.content_mask,
+            corner_radii: texture.corner_radii,
+            opacity: texture.opacity,
+            pad_0: 0.0,
+            pad_1: 0.0,
+            pad_2: 0.0,
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 #[expect(missing_docs)]
 pub struct PathId(pub usize);

@@ -731,6 +731,54 @@ fragment float4 polychrome_sprite_fragment(
   return color;
 }
 
+struct ExternalTextureVertexOutput {
+  float4 position [[position]];
+  float2 uv;
+  uint sprite_id [[flat]];
+  float clip_distance [[clip_distance]][4];
+};
+
+struct ExternalTextureFragmentInput {
+  float4 position [[position]];
+  float2 uv;
+  uint sprite_id [[flat]];
+};
+
+vertex ExternalTextureVertexOutput external_texture_vertex(
+    uint unit_vertex_id [[vertex_id]], uint sprite_id [[instance_id]],
+    constant float2 *unit_vertices [[buffer(SpriteInputIndex_Vertices)]],
+    constant ExternalTextureSprite *sprites [[buffer(SpriteInputIndex_Sprites)]],
+    constant Size_DevicePixels *viewport_size
+    [[buffer(SpriteInputIndex_ViewportSize)]]) {
+
+  float2 unit_vertex = unit_vertices[unit_vertex_id];
+  ExternalTextureSprite sprite = sprites[sprite_id];
+  float4 device_position =
+      to_device_position(unit_vertex, sprite.bounds, viewport_size);
+  float4 clip_distance = distance_from_clip_rect(unit_vertex, sprite.bounds,
+                                                 sprite.content_mask.bounds);
+  // The producer owns the whole quad, so the unit vertex is the UV.
+  return ExternalTextureVertexOutput{
+      device_position,
+      unit_vertex,
+      sprite_id,
+      {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w}};
+}
+
+fragment float4 external_texture_fragment(
+    ExternalTextureFragmentInput input [[stage_in]],
+    constant ExternalTextureSprite *sprites [[buffer(SpriteInputIndex_Sprites)]],
+    texture2d<float> external_texture
+    [[texture(SpriteInputIndex_AtlasTexture)]]) {
+  ExternalTextureSprite sprite = sprites[input.sprite_id];
+  constexpr sampler external_sampler(mag_filter::linear, min_filter::linear);
+  float4 color = external_texture.sample(external_sampler, input.uv);
+  float distance =
+      quad_sdf(input.position.xy, sprite.bounds, sprite.corner_radii);
+  color.a *= sprite.opacity * saturate(0.5 - distance);
+  return color;
+}
+
 struct PathRasterizationVertexOutput {
   float4 position [[position]];
   float2 st_position;
