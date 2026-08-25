@@ -44,8 +44,8 @@ fn vs_external_texture(
     out.position = to_device_position(unit_vertex, sprite.bounds);
     // UV is where this vertex falls inside `tex_bounds`, not inside the quad:
     // several primitives can window onto one full-viewport texture.
-    let point = sprite.bounds.origin + unit_vertex * sprite.bounds.size;
-    out.uv = (point - sprite.tex_bounds.origin) / sprite.tex_bounds.size;
+    let sample_pos = sprite.bounds.origin + unit_vertex * sprite.bounds.size;
+    out.uv = (sample_pos - sprite.tex_bounds.origin) / sprite.tex_bounds.size;
     out.sprite_id = instance_id;
     out.clip_distances = distance_from_clip_rect(unit_vertex, sprite.bounds, sprite.content_mask);
     return out;

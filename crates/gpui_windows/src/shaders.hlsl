@@ -1238,8 +1238,8 @@ ExternalTextureVertexOutput external_texture_vertex(uint vertex_id: SV_VertexID,
     ExternalTextureSprite sprite = external_textures[texture_id];
     ExternalTextureVertexOutput output;
     output.position = to_device_position(unit_vertex, sprite.bounds);
-    float2 point = sprite.bounds.origin + unit_vertex * sprite.bounds.size;
-    output.uv = (point - sprite.tex_bounds.origin) / sprite.tex_bounds.size;
+    float2 sample_pos = sprite.bounds.origin + unit_vertex * sprite.bounds.size;
+    output.uv = (sample_pos - sprite.tex_bounds.origin) / sprite.tex_bounds.size;
     output.texture_id = texture_id;
     output.clip_distance = distance_from_clip_rect(unit_vertex, sprite.bounds, sprite.content_mask);
     return output;
