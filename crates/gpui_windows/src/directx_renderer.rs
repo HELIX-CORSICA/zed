@@ -374,7 +374,7 @@ impl DirectXRenderer {
                 }
                 PrimitiveBatch::Surfaces(range) => self.draw_surfaces(&scene.surfaces[range]),
                 PrimitiveBatch::ExternalTextures(range) => {
-                    self.draw_external_textures(&scene.external_textures[range])
+                    self.draw_external_textures(&scene.external_textures[range.clone()], range)
                 }
             }
             .with_context(|| {
@@ -740,7 +740,11 @@ impl DirectXRenderer {
         Ok(())
     }
 
-    fn draw_external_textures(&mut self, textures: &[PaintExternalTexture]) -> Result<()> {
+    fn draw_external_textures(
+        &mut self,
+        textures: &[PaintExternalTexture],
+        range: std::ops::Range<usize>,
+    ) -> Result<()> {
         if textures.is_empty() {
             return Ok(());
         }
@@ -796,7 +800,13 @@ impl DirectXRenderer {
                     .as_ref()
                     .context("batch params buffer missing")?,
                 &sampler,
-                index as u32,
+                // The shader indexes the whole scene buffer via
+                // `batch_start_index`, so this must be the sprite's position in
+                // `scene.external_textures` -- not its offset inside the batch.
+                // Batch-relative was invisible while the globe was the only
+                // external texture and drew every later primitive with the
+                // globe's full-viewport bounds once the glass added more.
+                (range.start + index) as u32,
                 1,
             );
             if let Some(mutex) = &keyed_mutex {
