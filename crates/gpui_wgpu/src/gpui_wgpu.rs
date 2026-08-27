@@ -8,6 +8,6 @@ pub use wgpu;
 pub use wgpu_atlas::*;
 pub use wgpu_context::*;
 pub use wgpu_renderer::{
-    GpuContext, WgpuRenderer, WgpuSurfaceConfig, register_external_texture,
-    unregister_external_texture,
+    GpuContext, WgpuRenderer, WgpuSurfaceConfig, last_present_phases_ms,
+    register_external_texture, unregister_external_texture,
 };

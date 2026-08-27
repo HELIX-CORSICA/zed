@@ -14,8 +14,25 @@ use std::collections::HashMap;
 use std::num::NonZeroU64;
 use std::ops::Range;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
+use std::time::Instant;
+
+static LAST_ACQUIRE_US: AtomicU64 = AtomicU64::new(0);
+static LAST_RECORD_US: AtomicU64 = AtomicU64::new(0);
+static LAST_FLIP_US: AtomicU64 = AtomicU64::new(0);
+
+fn store_us(slot: &AtomicU64, started: Instant) {
+    slot.store(started.elapsed().as_micros() as u64, Ordering::Relaxed);
+}
+
+pub fn last_present_phases_ms() -> (f32, f32, f32) {
+    (
+        LAST_ACQUIRE_US.load(Ordering::Relaxed) as f32 / 1000.0,
+        LAST_RECORD_US.load(Ordering::Relaxed) as f32 / 1000.0,
+        LAST_FLIP_US.load(Ordering::Relaxed) as f32 / 1000.0,
+    )
+}
 
 const MAX_INSTANCE_BUFFER_SIZE: u64 = 256 * 1024 * 1024;
 
@@ -1540,6 +1557,7 @@ impl WgpuRenderer {
             self.blur_free_frames = 0;
         }
 
+        let acquire_t = Instant::now();
         let frame = match self.resources().surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => frame,
             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
@@ -1569,6 +1587,7 @@ impl WgpuRenderer {
                 return false;
             }
         };
+        store_us(&LAST_ACQUIRE_US, acquire_t);
 
         // Now that we know the surface is healthy, ensure intermediate textures exist
         self.ensure_intermediate_textures();
@@ -1624,13 +1643,17 @@ impl WgpuRenderer {
             );
         }
 
+        let record_t = Instant::now();
         if let Err(error) = self.record_frame(scene, &frame_view, &frame.texture) {
             log::error!("{error:#}");
             self.resources().queue.submit(std::iter::empty());
             return false;
         }
+        store_us(&LAST_RECORD_US, record_t);
 
+        let flip_t = Instant::now();
         frame.present();
+        store_us(&LAST_FLIP_US, flip_t);
         true
     }
 
