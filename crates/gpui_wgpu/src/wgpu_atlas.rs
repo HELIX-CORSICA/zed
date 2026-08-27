@@ -74,12 +74,14 @@ impl WgpuAtlas {
         lock.flush_uploads();
     }
 
-    pub fn get_texture_info(&self, id: AtlasTextureId) -> WgpuTextureInfo {
-        let lock = self.0.lock();
-        let texture = &lock.storage[id];
-        WgpuTextureInfo {
+    pub fn contains(&self, id: AtlasTextureId) -> bool {
+        self.0.lock().storage.get(id).is_some()
+    }
+
+    pub fn get_texture_info(&self, id: AtlasTextureId) -> Option<WgpuTextureInfo> {
+        self.0.lock().storage.get(id).map(|texture| WgpuTextureInfo {
             view: texture.view.clone(),
-        }
+        })
     }
 
     /// Clears all cached textures and tiles, forcing them to be recreated.
@@ -461,6 +463,18 @@ mod tests {
         atlas.remove(&key);
         atlas.before_frame();
         Ok(())
+    }
+
+    #[test]
+    fn missing_texture_info_is_none() {
+        let (device, queue) = test_device_and_queue().expect("test device");
+        let atlas = WgpuAtlas::new(device, queue, wgpu::TextureFormat::Bgra8Unorm);
+        let id = AtlasTextureId {
+            index: 0,
+            kind: AtlasTextureKind::Monochrome,
+        };
+        assert!(!atlas.contains(id));
+        assert!(atlas.get_texture_info(id).is_none());
     }
 
     #[test]

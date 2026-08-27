@@ -1211,9 +1211,11 @@ impl X11WindowStatePtr {
 
     pub fn scheduled_frame_fired(&self) {
         if self.frame_loop.get() == X11FrameLoop::Scheduled {
+            let force_render =
+                std::mem::take(&mut self.state.borrow_mut().force_render_after_recovery);
             self.refresh(RequestFrameOptions {
                 require_presentation: false,
-                force_render: false,
+                force_render,
             });
         }
     }
