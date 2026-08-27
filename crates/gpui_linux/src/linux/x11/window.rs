@@ -35,9 +35,37 @@ use std::{
     num::NonZeroU32,
     ptr::NonNull,
     rc::Rc,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
     time::Instant,
 };
+
+static X11_SKIP: AtomicU64 = AtomicU64::new(0);
+static X11_PARK: AtomicU64 = AtomicU64::new(0);
+static X11_SCHED: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn x11_probe(kind: u8) {
+    match kind {
+        0 => {
+            X11_SKIP.fetch_add(1, Ordering::Relaxed);
+        }
+        1 => {
+            X11_PARK.fetch_add(1, Ordering::Relaxed);
+        }
+        _ => {
+            X11_SCHED.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    let skip = X11_SKIP.load(Ordering::Relaxed);
+    let park = X11_PARK.load(Ordering::Relaxed);
+    let sched = X11_SCHED.load(Ordering::Relaxed);
+    let _ = std::fs::write(
+        "/tmp/helix-x11-frame.json",
+        format!(r#"{{"skip":{skip},"park":{park},"sched":{sched}}}"#),
+    );
+}
 
 use super::{X11Display, XINPUT_ALL_DEVICE_GROUPS, XINPUT_ALL_DEVICES};
 
@@ -1196,7 +1224,6 @@ impl X11WindowStatePtr {
     pub fn refresh(&self, request_frame_options: RequestFrameOptions) {
         if self.frame_loop.get() == X11FrameLoop::Ticking {
             self.frame_loop.set(X11FrameLoop::RescheduleRequested);
-            eprintln!("x11-frame nested refresh");
             return;
         }
         self.frame_loop.set(X11FrameLoop::Ticking);
@@ -1208,9 +1235,11 @@ impl X11WindowStatePtr {
         self.state.borrow_mut().last_refresh_end = Some(Instant::now());
         if self.frame_loop.get() == X11FrameLoop::RescheduleRequested {
             self.frame_loop.set(X11FrameLoop::Scheduled);
+            x11_probe(2);
             self.ping_frame();
         } else {
             self.frame_loop.set(X11FrameLoop::Parked);
+            x11_probe(1);
         }
     }
 

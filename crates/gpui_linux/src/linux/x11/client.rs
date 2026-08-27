@@ -737,6 +737,8 @@ impl X11Client {
                             require_presentation: true,
                             force_render: false,
                         });
+                    } else {
+                        super::window::x11_probe(0);
                     }
                 }
             }
@@ -2036,6 +2038,8 @@ impl X11ClientState {
                                     require_presentation: false,
                                     force_render,
                                 });
+                            } else {
+                                super::window::x11_probe(0);
                             }
                         }
                         xcb_connection
