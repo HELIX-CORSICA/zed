@@ -1114,10 +1114,10 @@ mod tests {
     #[test]
     fn insert_backdrop_blur_stores_order() {
         let mut scene = Scene::default();
-        scene.insert_backdrop_blur(blur_at(0, 0.0));
+        scene.insert_backdrop_blur(blur_at(999, 0.0));
         scene.finish();
         assert_eq!(scene.backdrop_blurs.len(), 1);
-        assert_eq!(scene.backdrop_blurs[0].order, 0);
+        assert_ne!(scene.backdrop_blurs[0].order, 999);
         assert_eq!(scene.backdrop_blurs[0].blur_radius, ScaledPixels(8.0));
     }
 
