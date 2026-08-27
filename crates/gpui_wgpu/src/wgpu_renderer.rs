@@ -194,6 +194,23 @@ struct InstanceBindings {
 static EXTERNAL_TEXTURES: LazyLock<Mutex<HashMap<usize, wgpu::Texture>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+static FRAME_UNDERLAY: Mutex<Option<wgpu::Texture>> = Mutex::new(None);
+
+/// Next `record_frame` copies this texture onto the swapchain (`Load`) and
+/// skips the external-texture sample pass. Same-device producers only.
+pub fn set_frame_underlay(texture: Option<wgpu::Texture>) {
+    *FRAME_UNDERLAY
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = texture;
+}
+
+pub fn take_frame_underlay() -> Option<wgpu::Texture> {
+    FRAME_UNDERLAY
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take()
+}
+
 /// Registers a producer-owned texture and returns its token. The producer must
 /// keep the texture alive until it calls [`unregister_external_texture`].
 pub fn register_external_texture(texture: wgpu::Texture) -> usize {
@@ -535,14 +552,19 @@ impl WgpuRenderer {
             );
         }
 
-        let surface_supports_copy_src = surface_caps
+        let mut surface_usage = wgpu::TextureUsages::RENDER_ATTACHMENT;
+        if surface_caps
             .usages
-            .contains(wgpu::TextureUsages::COPY_SRC);
-        let surface_usage = if surface_supports_copy_src {
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC
-        } else {
-            wgpu::TextureUsages::RENDER_ATTACHMENT
-        };
+            .contains(wgpu::TextureUsages::COPY_SRC)
+        {
+            surface_usage |= wgpu::TextureUsages::COPY_SRC;
+        }
+        if surface_caps
+            .usages
+            .contains(wgpu::TextureUsages::COPY_DST)
+        {
+            surface_usage |= wgpu::TextureUsages::COPY_DST;
+        }
 
         let surface_config = wgpu::SurfaceConfiguration {
             usage: surface_usage,
@@ -1686,6 +1708,42 @@ impl WgpuRenderer {
                     label: Some("main_encoder"),
                 });
 
+        let underlay = take_frame_underlay().filter(|src| {
+            self.surface_config
+                .usage
+                .contains(wgpu::TextureUsages::COPY_DST)
+                && src.format() == surface_texture.format()
+                && src.width() == surface_texture.width()
+                && src.height() == surface_texture.height()
+        });
+        if let Some(src) = underlay.as_ref() {
+            encoder.copy_texture_to_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: src,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyTextureInfo {
+                    texture: surface_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::Extent3d {
+                    width: src.width(),
+                    height: src.height(),
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+        let underlay = underlay.is_some();
+        let load = if underlay {
+            wgpu::LoadOp::Load
+        } else {
+            wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
+        };
+
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("main_pass"),
@@ -1693,7 +1751,7 @@ impl WgpuRenderer {
                     view: frame_view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        load,
                         store: wgpu::StoreOp::Store,
                     },
                     depth_slice: None,
@@ -1809,12 +1867,16 @@ impl WgpuRenderer {
                     // Surfaces are macOS-only for video playback and are not
                     // implemented by the WGPU renderer.
                     PrimitiveBatch::Surfaces(_surfaces) => {}
-                    PrimitiveBatch::ExternalTextures(range) => self.draw_external_textures(
-                        &scene.external_textures[range.clone()],
-                        &instance_bindings,
-                        range,
-                        &mut pass,
-                    )?,
+                    PrimitiveBatch::ExternalTextures(range) => {
+                        if !underlay {
+                            self.draw_external_textures(
+                                &scene.external_textures[range.clone()],
+                                &instance_bindings,
+                                range,
+                                &mut pass,
+                            )?;
+                        }
+                    }
                 }
             }
 
@@ -2932,5 +2994,13 @@ mod tests {
         assert_eq!(std::mem::size_of::<MonochromeSprite>(), 28 * 4);
         assert_eq!(std::mem::size_of::<SubpixelSprite>(), 28 * 4);
         assert_eq!(std::mem::size_of::<PolychromeSprite>(), 24 * 4);
+    }
+
+    #[test]
+    fn frame_underlay_is_taken_once() {
+        let _ = take_frame_underlay();
+        assert!(take_frame_underlay().is_none());
+        set_frame_underlay(None);
+        assert!(take_frame_underlay().is_none());
     }
 }
