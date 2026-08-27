@@ -1688,9 +1688,8 @@ impl PlatformWindow for X11Window {
         let ptr = self.0.clone();
         executor
             .spawn(async move {
-                let window = X11Window(ptr);
-                window.0.state.borrow_mut().frame_wake_pending = false;
-                window.refresh(RequestFrameOptions {
+                ptr.state.borrow_mut().frame_wake_pending = false;
+                ptr.refresh(RequestFrameOptions {
                     require_presentation: false,
                     force_render: false,
                 });
