@@ -1996,12 +1996,17 @@ impl X11ClientState {
                             let force_render = std::mem::take(
                                 &mut window.window.state.borrow_mut().force_render_after_recovery,
                             );
+                            let skip_timer = std::mem::take(
+                                &mut window.window.state.borrow_mut().skip_next_timer,
+                            );
                             let window = window.window.clone();
                             drop(state);
-                            window.refresh(RequestFrameOptions {
-                                require_presentation: false,
-                                force_render,
-                            });
+                            if !skip_timer || force_render {
+                                window.refresh(RequestFrameOptions {
+                                    require_presentation: false,
+                                    force_render,
+                                });
+                            }
                         }
                         xcb_connection
                     };
