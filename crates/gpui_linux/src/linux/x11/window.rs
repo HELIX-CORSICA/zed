@@ -45,6 +45,23 @@ use std::{
 static X11_SKIP: AtomicU64 = AtomicU64::new(0);
 static X11_PARK: AtomicU64 = AtomicU64::new(0);
 static X11_SCHED: AtomicU64 = AtomicU64::new(0);
+static X11_SCHED_CALL: AtomicU64 = AtomicU64::new(0);
+static X11_PARK_AFTER: AtomicU64 = AtomicU64::new(0);
+static X11_PARK_NO: AtomicU64 = AtomicU64::new(0);
+
+fn x11_write_probe() {
+    let skip = X11_SKIP.load(Ordering::Relaxed);
+    let park = X11_PARK.load(Ordering::Relaxed);
+    let sched = X11_SCHED.load(Ordering::Relaxed);
+    let park_after = X11_PARK_AFTER.load(Ordering::Relaxed);
+    let park_no = X11_PARK_NO.load(Ordering::Relaxed);
+    let _ = std::fs::write(
+        "/tmp/helix-x11-frame.json",
+        format!(
+            r#"{{"skip":{skip},"park":{park},"sched":{sched},"park_after":{park_after},"park_no":{park_no}}}"#
+        ),
+    );
+}
 
 pub(crate) fn x11_probe(kind: u8) {
     match kind {
@@ -58,13 +75,11 @@ pub(crate) fn x11_probe(kind: u8) {
             X11_SCHED.fetch_add(1, Ordering::Relaxed);
         }
     }
-    let skip = X11_SKIP.load(Ordering::Relaxed);
-    let park = X11_PARK.load(Ordering::Relaxed);
-    let sched = X11_SCHED.load(Ordering::Relaxed);
-    let _ = std::fs::write(
-        "/tmp/helix-x11-frame.json",
-        format!(r#"{{"skip":{skip},"park":{park},"sched":{sched}}}"#),
-    );
+    x11_write_probe();
+}
+
+fn x11_note_sched_call() {
+    X11_SCHED_CALL.fetch_add(1, Ordering::Relaxed);
 }
 
 use super::{X11Display, XINPUT_ALL_DEVICE_GROUPS, XINPUT_ALL_DEVICES};
@@ -1227,6 +1242,7 @@ impl X11WindowStatePtr {
             return;
         }
         self.frame_loop.set(X11FrameLoop::Ticking);
+        let sched0 = X11_SCHED_CALL.load(Ordering::Relaxed);
         let callback = self.callbacks.borrow_mut().request_frame.take();
         if let Some(mut fun) = callback {
             fun(request_frame_options);
@@ -1239,6 +1255,11 @@ impl X11WindowStatePtr {
             self.ping_frame();
         } else {
             self.frame_loop.set(X11FrameLoop::Parked);
+            if X11_SCHED_CALL.load(Ordering::Relaxed) > sched0 {
+                X11_PARK_AFTER.fetch_add(1, Ordering::Relaxed);
+            } else {
+                X11_PARK_NO.fetch_add(1, Ordering::Relaxed);
+            }
             x11_probe(1);
         }
     }
@@ -1760,6 +1781,7 @@ impl PlatformWindow for X11Window {
     }
 
     fn schedule_frame(&self) {
+        x11_note_sched_call();
         match self.0.frame_loop.get() {
             X11FrameLoop::Parked => {
                 self.0.frame_loop.set(X11FrameLoop::Scheduled);
