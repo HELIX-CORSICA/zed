@@ -552,11 +552,11 @@ impl WgpuRenderer {
             );
         }
 
-        let mut surface_usage = wgpu::TextureUsages::RENDER_ATTACHMENT;
-        if surface_caps
+        let surface_supports_copy_src = surface_caps
             .usages
-            .contains(wgpu::TextureUsages::COPY_SRC)
-        {
+            .contains(wgpu::TextureUsages::COPY_SRC);
+        let mut surface_usage = wgpu::TextureUsages::RENDER_ATTACHMENT;
+        if surface_supports_copy_src {
             surface_usage |= wgpu::TextureUsages::COPY_SRC;
         }
         if surface_caps
