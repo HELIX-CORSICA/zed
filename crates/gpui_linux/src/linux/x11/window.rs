@@ -29,7 +29,13 @@ use x11rb::{
 };
 
 use std::{
-    cell::RefCell, ffi::c_void, fmt::Display, num::NonZeroU32, ptr::NonNull, rc::Rc, sync::Arc,
+    cell::{Cell, RefCell},
+    ffi::c_void,
+    fmt::Display,
+    num::NonZeroU32,
+    ptr::NonNull,
+    rc::Rc,
+    sync::Arc,
     time::Instant,
 };
 
@@ -280,7 +286,6 @@ pub struct X11WindowState {
     active: bool,
     hovered: bool,
     pub(crate) force_render_after_recovery: bool,
-    frame_wake_pending: bool,
     pub(crate) last_refresh_end: Option<Instant>,
     fullscreen: bool,
     client_side_decorations_supported: bool,
@@ -297,10 +302,19 @@ impl X11WindowState {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum X11FrameLoop {
+    Parked,
+    Ticking,
+    Scheduled,
+    RescheduleRequested,
+}
+
 #[derive(Clone)]
 pub(crate) struct X11WindowStatePtr {
     pub state: Rc<RefCell<X11WindowState>>,
     pub(crate) callbacks: Rc<RefCell<Callbacks>>,
+    frame_loop: Rc<Cell<X11FrameLoop>>,
     xcb: Rc<XCBConnection>,
     pub(crate) x_window: xproto::Window,
 }
@@ -832,7 +846,6 @@ impl X11WindowState {
                 active: false,
                 hovered: false,
                 force_render_after_recovery: false,
-                frame_wake_pending: false,
                 last_refresh_end: None,
                 fullscreen: false,
                 maximized_vertical: false,
@@ -954,6 +967,7 @@ impl X11Window {
                 is_bgr,
             )?)),
             callbacks: Rc::new(RefCell::new(Callbacks::default())),
+            frame_loop: Rc::new(Cell::new(X11FrameLoop::Parked)),
             xcb: xcb.clone(),
             x_window,
         };
@@ -1180,12 +1194,34 @@ impl X11WindowStatePtr {
     }
 
     pub fn refresh(&self, request_frame_options: RequestFrameOptions) {
+        self.frame_loop.set(X11FrameLoop::Ticking);
         let callback = self.callbacks.borrow_mut().request_frame.take();
         if let Some(mut fun) = callback {
             fun(request_frame_options);
             self.callbacks.borrow_mut().request_frame = Some(fun);
         }
         self.state.borrow_mut().last_refresh_end = Some(Instant::now());
+        if self.frame_loop.get() == X11FrameLoop::RescheduleRequested {
+            self.frame_loop.set(X11FrameLoop::Scheduled);
+            self.ping_frame();
+        } else {
+            self.frame_loop.set(X11FrameLoop::Parked);
+        }
+    }
+
+    pub fn scheduled_frame_fired(&self) {
+        if self.frame_loop.get() == X11FrameLoop::Scheduled {
+            self.refresh(RequestFrameOptions {
+                require_presentation: false,
+                force_render: false,
+            });
+        }
+    }
+
+    fn ping_frame(&self) {
+        if let Some(client) = self.state.borrow().client.get_client() {
+            client.0.borrow().frame_ping.ping();
+        }
     }
 
     pub fn handle_input(&self, input: PlatformInput) {
@@ -1681,24 +1717,16 @@ impl PlatformWindow for X11Window {
     }
 
     fn schedule_frame(&self) {
-        let executor = {
-            let mut inner = self.0.state.borrow_mut();
-            if inner.frame_wake_pending {
-                return;
+        match self.0.frame_loop.get() {
+            X11FrameLoop::Parked => {
+                self.0.frame_loop.set(X11FrameLoop::Scheduled);
+                self.0.ping_frame();
             }
-            inner.frame_wake_pending = true;
-            inner.executor.clone()
-        };
-        let ptr = self.0.clone();
-        executor
-            .spawn(async move {
-                ptr.state.borrow_mut().frame_wake_pending = false;
-                ptr.refresh(RequestFrameOptions {
-                    require_presentation: false,
-                    force_render: false,
-                });
-            })
-            .detach();
+            X11FrameLoop::Ticking => {
+                self.0.frame_loop.set(X11FrameLoop::RescheduleRequested);
+            }
+            X11FrameLoop::Scheduled | X11FrameLoop::RescheduleRequested => {}
+        }
     }
 
     fn on_input(&self, callback: Box<dyn FnMut(PlatformInput) -> gpui::DispatchEventResult>) {

@@ -3,6 +3,7 @@ use ashpd::WindowIdentifier;
 use calloop::{
     EventLoop, LoopHandle, RegistrationToken,
     generic::{FdWrapper, Generic},
+    ping::Ping,
 };
 use collections::HashMap;
 use core::str;
@@ -171,6 +172,7 @@ struct ScrollAxisState {
 pub struct X11ClientState {
     pub(crate) loop_handle: LoopHandle<'static, X11Client>,
     pub(crate) event_loop: Option<calloop::EventLoop<'static, X11Client>>,
+    pub(crate) frame_ping: Ping,
 
     pub(crate) last_click: Instant,
     pub(crate) last_mouse_button: Option<MouseButton>,
@@ -348,6 +350,14 @@ impl X11Client {
                 anyhow!("Failed to initialize event loop handling of wake events: {err:?}")
             })?;
 
+        let (frame_ping, frame_ping_source) =
+            calloop::ping::make_ping().context("Failed to create the X11 frame ping")?;
+        handle
+            .insert_source(frame_ping_source, |_, _, client: &mut X11Client| {
+                client.dispatch_scheduled_frames();
+            })
+            .map_err(|err| anyhow!("Failed to initialize X11 frame ping: {err:?}"))?;
+
         let (xcb_connection, x_root_index) = XCBConnection::connect(None)?;
         xcb_connection.prefetch_extension_information(xkb::X11_EXTENSION_NAME)?;
         xcb_connection.prefetch_extension_information(randr::X11_EXTENSION_NAME)?;
@@ -519,6 +529,7 @@ impl X11Client {
             last_capslock_changed_event: Capslock::default(),
             event_loop: Some(event_loop),
             loop_handle: handle,
+            frame_ping,
             common,
             last_click: Instant::now(),
             last_mouse_button: None,
@@ -787,6 +798,19 @@ impl X11Client {
                 log::error!("bug: xim handler not set in reset_ime");
             }
             state.ximc = Some(ximc);
+        }
+    }
+
+    fn dispatch_scheduled_frames(&self) {
+        let windows = self
+            .0
+            .borrow()
+            .windows
+            .values()
+            .map(|window_ref| window_ref.window.clone())
+            .collect::<Vec<_>>();
+        for window in windows {
+            window.scheduled_frame_fired();
         }
     }
 
