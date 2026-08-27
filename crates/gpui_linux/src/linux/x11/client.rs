@@ -732,13 +732,11 @@ impl X11Client {
                     let skip = window.state.borrow().last_refresh_end.is_some_and(|t| {
                         Instant::now().saturating_duration_since(t) < Duration::from_millis(40)
                     });
-                    if !skip
-                        && window.refresh(RequestFrameOptions {
+                    if !skip {
+                        window.refresh(RequestFrameOptions {
                             require_presentation: true,
                             force_render: false,
-                        })
-                    {
-                        window.ping_frame();
+                        });
                     }
                 }
             }
@@ -804,28 +802,15 @@ impl X11Client {
     }
 
     fn dispatch_scheduled_frames(&self) {
-        let xcb_connection = self.0.borrow().xcb_connection.clone();
-        loop {
-            let windows = self
-                .0
-                .borrow()
-                .windows
-                .values()
-                .map(|window_ref| window_ref.window.clone())
-                .collect::<Vec<_>>();
-            let mut again = false;
-            for window in windows {
-                if window.wants_scheduled_frame() {
-                    again |= window.refresh(RequestFrameOptions {
-                        require_presentation: false,
-                        force_render: false,
-                    });
-                }
-            }
-            self.process_x11_events(&xcb_connection).log_err();
-            if !again {
-                break;
-            }
+        let windows = self
+            .0
+            .borrow()
+            .windows
+            .values()
+            .map(|window_ref| window_ref.window.clone())
+            .collect::<Vec<_>>();
+        for window in windows {
+            window.scheduled_frame_fired();
         }
     }
 
@@ -2046,13 +2031,11 @@ impl X11ClientState {
                             drop(inner);
                             let window = window.window.clone();
                             drop(state);
-                            if (!skip_timer || force_render)
-                                && window.refresh(RequestFrameOptions {
+                            if !skip_timer || force_render {
+                                window.refresh(RequestFrameOptions {
                                     require_presentation: false,
                                     force_render,
-                                })
-                            {
-                                window.ping_frame();
+                                });
                             }
                         }
                         xcb_connection

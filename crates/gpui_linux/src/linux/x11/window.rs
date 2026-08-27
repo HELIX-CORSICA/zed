@@ -1193,7 +1193,7 @@ impl X11WindowStatePtr {
         }
     }
 
-    pub fn refresh(&self, request_frame_options: RequestFrameOptions) -> bool {
+    pub fn refresh(&self, request_frame_options: RequestFrameOptions) {
         self.frame_loop.set(X11FrameLoop::Ticking);
         let callback = self.callbacks.borrow_mut().request_frame.take();
         if let Some(mut fun) = callback {
@@ -1201,20 +1201,24 @@ impl X11WindowStatePtr {
             self.callbacks.borrow_mut().request_frame = Some(fun);
         }
         self.state.borrow_mut().last_refresh_end = Some(Instant::now());
-        let again = self.frame_loop.get() == X11FrameLoop::RescheduleRequested;
-        self.frame_loop.set(if again {
-            X11FrameLoop::Scheduled
+        if self.frame_loop.get() == X11FrameLoop::RescheduleRequested {
+            self.frame_loop.set(X11FrameLoop::Scheduled);
+            self.ping_frame();
         } else {
-            X11FrameLoop::Parked
-        });
-        again
+            self.frame_loop.set(X11FrameLoop::Parked);
+        }
     }
 
-    pub fn wants_scheduled_frame(&self) -> bool {
-        self.frame_loop.get() == X11FrameLoop::Scheduled
+    pub fn scheduled_frame_fired(&self) {
+        if self.frame_loop.get() == X11FrameLoop::Scheduled {
+            self.refresh(RequestFrameOptions {
+                require_presentation: false,
+                force_render: false,
+            });
+        }
     }
 
-    pub(crate) fn ping_frame(&self) {
+    fn ping_frame(&self) {
         if let Some(client) = self.state.borrow().client.get_client() {
             client.0.borrow().frame_ping.ping();
         }
