@@ -761,7 +761,7 @@ impl X11WindowState {
                     // If the window appearance changes, then the renderer will get updated
                     // too
                     transparent: false,
-                    preferred_present_mode: Some(wgpu::PresentMode::Immediate),
+                    preferred_present_mode: Some(gpui_wgpu::wgpu::PresentMode::Immediate),
                 };
                 WgpuRenderer::new(gpu_context, &raw_window, config, compositor_gpu)?
             };
