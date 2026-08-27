@@ -21,6 +21,8 @@ use std::time::Instant;
 static LAST_ACQUIRE_US: AtomicU64 = AtomicU64::new(0);
 static LAST_RECORD_US: AtomicU64 = AtomicU64::new(0);
 static LAST_FLIP_US: AtomicU64 = AtomicU64::new(0);
+static ATLAS_MISS_N: AtomicU64 = AtomicU64::new(0);
+static GPU_ERR_N: AtomicU64 = AtomicU64::new(0);
 
 fn store_us(slot: &AtomicU64, started: Instant) {
     slot.store(started.elapsed().as_micros() as u64, Ordering::Relaxed);
@@ -32,6 +34,14 @@ pub fn last_present_phases_ms() -> (f32, f32, f32) {
         LAST_RECORD_US.load(Ordering::Relaxed) as f32 / 1000.0,
         LAST_FLIP_US.load(Ordering::Relaxed) as f32 / 1000.0,
     )
+}
+
+pub fn atlas_miss_n() -> u64 {
+    ATLAS_MISS_N.load(Ordering::Relaxed)
+}
+
+pub fn gpu_err_n() -> u64 {
+    GPU_ERR_N.load(Ordering::Relaxed)
 }
 
 const MAX_INSTANCE_BUFFER_SIZE: u64 = 256 * 1024 * 1024;
@@ -1565,6 +1575,7 @@ impl WgpuRenderer {
         let last_error = self.last_error.lock().unwrap().take();
         if let Some(error) = last_error {
             self.failed_frame_count += 1;
+            GPU_ERR_N.fetch_add(1, Ordering::Relaxed);
             log::error!(
                 "GPU error during frame (failure {} of 10): {error}",
                 self.failed_frame_count
@@ -1589,6 +1600,7 @@ impl WgpuRenderer {
         self.atlas.before_frame();
 
         if !self.atlas_covers(scene) {
+            ATLAS_MISS_N.fetch_add(1, Ordering::Relaxed);
             self.needs_redraw = true;
             return false;
         }
