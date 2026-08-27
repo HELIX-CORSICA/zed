@@ -279,6 +279,7 @@ pub struct X11WindowState {
     active: bool,
     hovered: bool,
     pub(crate) force_render_after_recovery: bool,
+    frame_wake_pending: bool,
     fullscreen: bool,
     client_side_decorations_supported: bool,
     decorations: WindowDecorations,
@@ -829,6 +830,7 @@ impl X11WindowState {
                 active: false,
                 hovered: false,
                 force_render_after_recovery: false,
+                frame_wake_pending: false,
                 fullscreen: false,
                 maximized_vertical: false,
                 maximized_horizontal: false,
@@ -1672,6 +1674,28 @@ impl PlatformWindow for X11Window {
 
     fn on_request_frame(&self, callback: Box<dyn FnMut(RequestFrameOptions)>) {
         self.0.callbacks.borrow_mut().request_frame = Some(callback);
+    }
+
+    fn schedule_frame(&self) {
+        let executor = {
+            let mut inner = self.0.state.borrow_mut();
+            if inner.frame_wake_pending {
+                return;
+            }
+            inner.frame_wake_pending = true;
+            inner.executor.clone()
+        };
+        let ptr = self.0.clone();
+        executor
+            .spawn(async move {
+                let window = X11Window(ptr);
+                window.0.state.borrow_mut().frame_wake_pending = false;
+                window.refresh(RequestFrameOptions {
+                    require_presentation: false,
+                    force_render: false,
+                });
+            })
+            .detach();
     }
 
     fn on_input(&self, callback: Box<dyn FnMut(PlatformInput) -> gpui::DispatchEventResult>) {
