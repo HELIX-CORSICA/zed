@@ -23,6 +23,7 @@ static LAST_RECORD_US: AtomicU64 = AtomicU64::new(0);
 static LAST_FLIP_US: AtomicU64 = AtomicU64::new(0);
 static ATLAS_MISS_N: AtomicU64 = AtomicU64::new(0);
 static GPU_ERR_N: AtomicU64 = AtomicU64::new(0);
+static LAST_GPU_ERR: Mutex<Option<String>> = Mutex::new(None);
 
 fn store_us(slot: &AtomicU64, started: Instant) {
     slot.store(started.elapsed().as_micros() as u64, Ordering::Relaxed);
@@ -42,6 +43,13 @@ pub fn atlas_miss_n() -> u64 {
 
 pub fn gpu_err_n() -> u64 {
     GPU_ERR_N.load(Ordering::Relaxed)
+}
+
+pub fn last_gpu_err() -> Option<String> {
+    LAST_GPU_ERR
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
 }
 
 const MAX_INSTANCE_BUFFER_SIZE: u64 = 256 * 1024 * 1024;
@@ -393,7 +401,6 @@ pub struct WgpuRenderer {
     opaque_alpha_mode: wgpu::CompositeAlphaMode,
     max_texture_size: u32,
     last_error: Arc<Mutex<Option<String>>>,
-    failed_frame_count: u32,
     device_lost: std::sync::Arc<std::sync::atomic::AtomicBool>,
     surface_configured: bool,
     needs_redraw: bool,
@@ -806,7 +813,6 @@ impl WgpuRenderer {
             opaque_alpha_mode,
             max_texture_size,
             last_error,
-            failed_frame_count: 0,
             device_lost: context.device_lost_flag(),
             surface_configured: true,
             needs_redraw: false,
@@ -1574,27 +1580,16 @@ impl WgpuRenderer {
 
         let last_error = self.last_error.lock().unwrap().take();
         if let Some(error) = last_error {
-            self.failed_frame_count += 1;
             GPU_ERR_N.fetch_add(1, Ordering::Relaxed);
-            log::error!(
-                "GPU error during frame (failure {} of 10): {error}",
-                self.failed_frame_count
-            );
-
-            // TBD. Does retrying more actually help?
-            if self.failed_frame_count > 10 {
-                panic!("Too many consecutive GPU errors. Last error: {error}");
-            } else if self.failed_frame_count > 5 {
-                if let Some(res) = self.resources.as_mut() {
-                    res.invalidate_intermediate_textures();
-                }
-                self.atlas.clear();
-                self.needs_redraw = true;
-                self.failed_frame_count = 0;
-                return false;
+            // Shared-device globe compose posts uncaptured errors on this Device.
+            // atlas.clear + force_render every 6 frames was the 70 ms hitch.
+            let mut slot = LAST_GPU_ERR
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if slot.is_none() {
+                eprintln!("gpui_wgpu leftover gpu error: {error}");
             }
-        } else {
-            self.failed_frame_count = 0;
+            *slot = Some(error);
         }
 
         self.atlas.before_frame();
@@ -3078,5 +3073,13 @@ mod tests {
         assert!(take_frame_underlay().is_none());
         set_frame_underlay(None);
         assert!(take_frame_underlay().is_none());
+    }
+
+    #[test]
+    fn leftover_gpu_error_does_not_force_atlas_clear() {
+        let src = include_str!("wgpu_renderer.rs");
+        assert!(!src.contains("failed_frame_count > 5"));
+        assert!(src.contains("leftover gpu error"));
+        assert!(last_gpu_err().is_none());
     }
 }
