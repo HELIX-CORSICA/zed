@@ -718,10 +718,15 @@ impl X11Client {
                     .get(&x_window)
                     .and_then(|window| window.is_mapped.then(|| window.window.clone()));
                 if let Some(window) = window {
-                    window.refresh(RequestFrameOptions {
-                        require_presentation: true,
-                        force_render: false,
+                    let skip = window.state.borrow().last_refresh_end.is_some_and(|t| {
+                        Instant::now().saturating_duration_since(t) < Duration::from_millis(40)
                     });
+                    if !skip {
+                        window.refresh(RequestFrameOptions {
+                            require_presentation: true,
+                            force_render: false,
+                        });
+                    }
                 }
             }
         }
