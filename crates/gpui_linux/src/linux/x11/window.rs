@@ -30,6 +30,7 @@ use x11rb::{
 
 use std::{
     cell::RefCell, ffi::c_void, fmt::Display, num::NonZeroU32, ptr::NonNull, rc::Rc, sync::Arc,
+    time::Instant,
 };
 
 use super::{X11Display, XINPUT_ALL_DEVICE_GROUPS, XINPUT_ALL_DEVICES};
@@ -280,7 +281,7 @@ pub struct X11WindowState {
     hovered: bool,
     pub(crate) force_render_after_recovery: bool,
     frame_wake_pending: bool,
-    pub(crate) skip_next_timer: bool,
+    pub(crate) last_refresh_end: Option<Instant>,
     fullscreen: bool,
     client_side_decorations_supported: bool,
     decorations: WindowDecorations,
@@ -832,7 +833,7 @@ impl X11WindowState {
                 hovered: false,
                 force_render_after_recovery: false,
                 frame_wake_pending: false,
-                skip_next_timer: false,
+                last_refresh_end: None,
                 fullscreen: false,
                 maximized_vertical: false,
                 maximized_horizontal: false,
@@ -1184,7 +1185,7 @@ impl X11WindowStatePtr {
             fun(request_frame_options);
             self.callbacks.borrow_mut().request_frame = Some(fun);
         }
-        self.state.borrow_mut().skip_next_timer = true;
+        self.state.borrow_mut().last_refresh_end = Some(Instant::now());
     }
 
     pub fn handle_input(&self, input: PlatformInput) {

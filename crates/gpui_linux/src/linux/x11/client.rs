@@ -1993,12 +1993,13 @@ impl X11ClientState {
                         let mut state = client.0.borrow_mut();
                         let xcb_connection = state.xcb_connection.clone();
                         if let Some(window) = state.windows.get_mut(&x_window) {
-                            let force_render = std::mem::take(
-                                &mut window.window.state.borrow_mut().force_render_after_recovery,
-                            );
-                            let skip_timer = std::mem::take(
-                                &mut window.window.state.borrow_mut().skip_next_timer,
-                            );
+                            let mut inner = window.window.state.borrow_mut();
+                            let force_render = std::mem::take(&mut inner.force_render_after_recovery);
+                            let skip_timer = inner.last_refresh_end.is_some_and(|t| {
+                                Instant::now().saturating_duration_since(t)
+                                    < Duration::from_millis(40)
+                            });
+                            drop(inner);
                             let window = window.window.clone();
                             drop(state);
                             if !skip_timer || force_render {
