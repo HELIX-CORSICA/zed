@@ -9,6 +9,6 @@ pub use wgpu_atlas::*;
 pub use wgpu_context::*;
 pub use wgpu_renderer::{
     GpuContext, WgpuRenderer, WgpuSurfaceConfig, last_present_phases_ms,
-    register_external_texture, set_frame_underlay, take_frame_underlay,
-    unregister_external_texture,
+    register_external_texture, set_frame_underlay, set_surface_compose,
+    take_frame_underlay, unregister_external_texture,
 };

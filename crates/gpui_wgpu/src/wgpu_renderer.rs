@@ -195,6 +195,8 @@ static EXTERNAL_TEXTURES: LazyLock<Mutex<HashMap<usize, wgpu::Texture>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 static FRAME_UNDERLAY: Mutex<Option<wgpu::Texture>> = Mutex::new(None);
+static SURFACE_COMPOSE: Mutex<Option<Box<dyn FnMut(&wgpu::Texture) -> bool + Send>>> =
+    Mutex::new(None);
 
 /// Next `record_frame` copies this texture onto the swapchain (`Load`) and
 /// skips the external-texture sample pass. Same-device producers only.
@@ -209,6 +211,22 @@ pub fn take_frame_underlay() -> Option<wgpu::Texture> {
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .take()
+}
+
+pub fn set_surface_compose(f: Option<Box<dyn FnMut(&wgpu::Texture) -> bool + Send>>) {
+    *SURFACE_COMPOSE
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = f;
+}
+
+fn run_surface_compose(texture: &wgpu::Texture) -> bool {
+    let mut slot = SURFACE_COMPOSE
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    match slot.as_mut() {
+        Some(f) => f(texture),
+        None => false,
+    }
 }
 
 /// Registers a producer-owned texture and returns its token. The producer must
@@ -1611,6 +1629,8 @@ impl WgpuRenderer {
         };
         store_us(&LAST_ACQUIRE_US, acquire_t);
 
+        let composed = run_surface_compose(&frame.texture);
+
         // Now that we know the surface is healthy, ensure intermediate textures exist
         self.ensure_intermediate_textures();
 
@@ -1666,7 +1686,7 @@ impl WgpuRenderer {
         }
 
         let record_t = Instant::now();
-        if let Err(error) = self.record_frame(scene, &frame_view, &frame.texture) {
+        if let Err(error) = self.record_frame(scene, &frame_view, &frame.texture, composed) {
             log::error!("{error:#}");
             self.resources().queue.submit(std::iter::empty());
             return false;
@@ -1684,6 +1704,7 @@ impl WgpuRenderer {
         scene: &Scene,
         frame_view: &wgpu::TextureView,
         surface_texture: &wgpu::Texture,
+        composed: bool,
     ) -> Result<()> {
         let mut instance_offset = 0;
         let instance_bindings = self
@@ -1708,36 +1729,57 @@ impl WgpuRenderer {
                     label: Some("main_encoder"),
                 });
 
-        let underlay = take_frame_underlay().filter(|src| {
-            self.surface_config
-                .usage
-                .contains(wgpu::TextureUsages::COPY_DST)
-                && src.format() == surface_texture.format()
-                && src.width() == surface_texture.width()
-                && src.height() == surface_texture.height()
-        });
-        if let Some(src) = underlay.as_ref() {
-            encoder.copy_texture_to_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: src,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::TexelCopyTextureInfo {
-                    texture: surface_texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::Extent3d {
-                    width: src.width(),
-                    height: src.height(),
-                    depth_or_array_layers: 1,
-                },
-            );
-        }
-        let underlay = underlay.is_some();
+        let underlay = composed || match take_frame_underlay() {
+            Some(src)
+                if self
+                    .surface_config
+                    .usage
+                    .contains(wgpu::TextureUsages::COPY_DST)
+                    && src.format() == surface_texture.format()
+                    && src.width() == surface_texture.width()
+                    && src.height() == surface_texture.height() =>
+            {
+                encoder.copy_texture_to_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &src,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::TexelCopyTextureInfo {
+                        texture: surface_texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::Extent3d {
+                        width: src.width(),
+                        height: src.height(),
+                        depth_or_array_layers: 1,
+                    },
+                );
+                true
+            }
+            other => {
+                if let Some(src) = other {
+                    use std::sync::atomic::AtomicBool;
+                    static ONCE: AtomicBool = AtomicBool::new(false);
+                    if !ONCE.swap(true, Ordering::Relaxed) {
+                        eprintln!(
+                            "gpui_wgpu underlay skip src={}x{} {:?} dst={}x{} {:?} usage={:?}",
+                            src.width(),
+                            src.height(),
+                            src.format(),
+                            surface_texture.width(),
+                            surface_texture.height(),
+                            surface_texture.format(),
+                            self.surface_config.usage
+                        );
+                    }
+                }
+                false
+            }
+        };
         let load = if underlay {
             wgpu::LoadOp::Load
         } else {
