@@ -2378,6 +2378,17 @@ impl Window {
         self.on_next_frame(move |_, cx| cx.notify(entity));
     }
 
+    /// Present the last scene on the next frame without rebuilding views.
+    ///
+    /// Use this when an external compose already wrote the framebuffer and the
+    /// chrome tree is unchanged. [`request_animation_frame`] notifies the
+    /// current view and rebuilds its ancestors.
+    pub fn request_present(&self) {
+        self.needs_present.set(true);
+        self.platform_window.schedule_frame();
+        self.invalidator.wake_platform();
+    }
+
     /// Runs all callbacks scheduled via [`Self::on_next_frame`], returning how many ran.
     ///
     /// Tests have no platform frame loop, so this simulates the delivery of the
