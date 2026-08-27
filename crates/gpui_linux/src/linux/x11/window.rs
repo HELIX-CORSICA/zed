@@ -1194,6 +1194,11 @@ impl X11WindowStatePtr {
     }
 
     pub fn refresh(&self, request_frame_options: RequestFrameOptions) {
+        if self.frame_loop.get() == X11FrameLoop::Ticking {
+            self.frame_loop.set(X11FrameLoop::RescheduleRequested);
+            eprintln!("x11-frame nested refresh");
+            return;
+        }
         self.frame_loop.set(X11FrameLoop::Ticking);
         let callback = self.callbacks.borrow_mut().request_frame.take();
         if let Some(mut fun) = callback {
