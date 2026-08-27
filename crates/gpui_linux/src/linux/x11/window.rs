@@ -1184,21 +1184,21 @@ impl X11WindowStatePtr {
     pub fn refresh(&self, request_frame_options: RequestFrameOptions) {
         {
             let mut inner = self.state.borrow_mut();
-            let now = Instant::now();
             if let Some(prev) = inner.last_refresh {
-                if now.saturating_duration_since(prev) < Duration::from_millis(8) {
+                if Instant::now().saturating_duration_since(prev) < Duration::from_millis(8) {
                     inner.skip_next_timer = true;
                     return;
                 }
             }
-            inner.last_refresh = Some(now);
-            inner.skip_next_timer = true;
         }
         let callback = self.callbacks.borrow_mut().request_frame.take();
         if let Some(mut fun) = callback {
             fun(request_frame_options);
             self.callbacks.borrow_mut().request_frame = Some(fun);
         }
+        let mut inner = self.state.borrow_mut();
+        inner.last_refresh = Some(Instant::now());
+        inner.skip_next_timer = true;
     }
 
     pub fn handle_input(&self, input: PlatformInput) {
