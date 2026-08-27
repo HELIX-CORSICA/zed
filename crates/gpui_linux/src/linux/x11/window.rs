@@ -1226,6 +1226,13 @@ impl X11WindowStatePtr {
         }
     }
 
+    pub(crate) fn has_scheduled_frame(&self) -> bool {
+        matches!(
+            self.frame_loop.get(),
+            X11FrameLoop::Scheduled | X11FrameLoop::RescheduleRequested
+        )
+    }
+
     pub fn handle_input(&self, input: PlatformInput) {
         if self.is_blocked() {
             return;

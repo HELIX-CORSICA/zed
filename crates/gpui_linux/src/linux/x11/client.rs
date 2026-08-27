@@ -731,7 +731,7 @@ impl X11Client {
                 if let Some(window) = window {
                     let skip = window.state.borrow().last_refresh_end.is_some_and(|t| {
                         Instant::now().saturating_duration_since(t) < Duration::from_millis(40)
-                    });
+                    }) && !window.has_scheduled_frame();
                     if !skip {
                         window.refresh(RequestFrameOptions {
                             require_presentation: true,
@@ -2031,7 +2031,7 @@ impl X11ClientState {
                             drop(inner);
                             let window = window.window.clone();
                             drop(state);
-                            if !skip_timer || force_render {
+                            if !skip_timer || force_render || window.has_scheduled_frame() {
                                 window.refresh(RequestFrameOptions {
                                     require_presentation: false,
                                     force_render,
