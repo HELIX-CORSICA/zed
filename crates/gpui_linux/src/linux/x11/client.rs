@@ -730,7 +730,7 @@ impl X11Client {
                     .and_then(|window| window.is_mapped.then(|| window.window.clone()));
                 if let Some(window) = window {
                     let skip = window.state.borrow().last_refresh_end.is_some_and(|t| {
-                        Instant::now().saturating_duration_since(t) < Duration::from_millis(8)
+                        Instant::now().saturating_duration_since(t) < Duration::from_millis(40)
                     });
                     if !skip {
                         window.refresh(RequestFrameOptions {
@@ -2026,7 +2026,7 @@ impl X11ClientState {
                             let force_render = std::mem::take(&mut inner.force_render_after_recovery);
                             let skip_timer = inner.last_refresh_end.is_some_and(|t| {
                                 Instant::now().saturating_duration_since(t)
-                                    < Duration::from_millis(8)
+                                    < Duration::from_millis(40)
                             });
                             drop(inner);
                             let window = window.window.clone();
