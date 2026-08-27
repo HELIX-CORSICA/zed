@@ -51,6 +51,10 @@ pub struct Scene {
     pub polychrome_sprites: Vec<PolychromeSprite>,
     pub surfaces: Vec<PaintSurface>,
     pub external_textures: Vec<PaintExternalTexture>,
+    /// Backdrop-blur regions — deliberately OUTSIDE the primitive batch
+    /// stream: the renderer breaks its render pass at each blur's order to
+    /// snapshot the framebuffer (wgpu Linux; Metal skipped; Windows ignores).
+    pub backdrop_blurs: Vec<BackdropBlur>,
 }
 
 #[expect(missing_docs)]
@@ -68,6 +72,7 @@ impl Scene {
         self.polychrome_sprites.clear();
         self.surfaces.clear();
         self.external_textures.clear();
+        self.backdrop_blurs.clear();
     }
 
     pub fn len(&self) -> usize {
@@ -84,6 +89,21 @@ impl Scene {
     pub fn pop_layer(&mut self) {
         self.layer_stack.pop();
         self.paint_operations.push(PaintOperation::EndLayer);
+    }
+
+    pub fn insert_backdrop_blur(&mut self, mut blur: BackdropBlur) {
+        let clipped_bounds = blur.bounds.intersect(&blur.content_mask.bounds);
+        if clipped_bounds.is_empty() {
+            return;
+        }
+        blur.order = self
+            .layer_stack
+            .last()
+            .copied()
+            .unwrap_or_else(|| self.primitive_bounds.insert(clipped_bounds));
+        self.backdrop_blurs.push(blur);
+        self.paint_operations
+            .push(PaintOperation::BackdropBlur(blur));
     }
 
     pub fn insert_primitive(&mut self, primitive: impl Into<Primitive>) {
@@ -148,6 +168,7 @@ impl Scene {
         for operation in &prev_scene.paint_operations[range] {
             match operation {
                 PaintOperation::Primitive(primitive) => self.insert_primitive(primitive.clone()),
+                PaintOperation::BackdropBlur(blur) => self.insert_backdrop_blur(*blur),
                 PaintOperation::StartLayer(bounds) => self.push_layer(*bounds),
                 PaintOperation::EndLayer => self.pop_layer(),
             }
@@ -167,6 +188,7 @@ impl Scene {
             .sort_by_key(|sprite| (sprite.order, sprite.tile.tile_id));
         self.surfaces.sort_by_key(|surface| surface.order);
         self.external_textures.sort_by_key(|texture| texture.order);
+        self.backdrop_blurs.sort_by_key(|blur| blur.order);
     }
 
     #[cfg_attr(
@@ -223,6 +245,7 @@ pub(crate) enum PrimitiveKind {
 
 pub(crate) enum PaintOperation {
     Primitive(Primitive),
+    BackdropBlur(BackdropBlur),
     StartLayer(Bounds<ScaledPixels>),
     EndLayer,
 }
@@ -605,6 +628,21 @@ impl From<Underline> for Primitive {
     fn from(underline: Underline) -> Self {
         Primitive::Underline(underline)
     }
+}
+
+/// A within-window backdrop blur region: the renderer snapshots everything
+/// painted below this order and paints it back gaussian-blurred inside the
+/// rounded bounds (frosted-glass popovers). See
+/// [`crate::Window::paint_backdrop_blur`].
+#[derive(Debug, Copy, Clone)]
+#[repr(C)]
+#[expect(missing_docs)]
+pub struct BackdropBlur {
+    pub order: DrawOrder,
+    pub blur_radius: ScaledPixels,
+    pub bounds: Bounds<ScaledPixels>,
+    pub content_mask: ContentMask<ScaledPixels>,
+    pub corner_radii: Corners<ScaledPixels>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -1044,5 +1082,73 @@ impl PathVertex<Pixels> {
             st_position: self.st_position,
             content_mask: self.content_mask.scale(factor),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ContentMask, point, size};
+
+    const _: fn(
+        &mut crate::Window,
+        crate::Bounds<crate::Pixels>,
+        crate::Corners<crate::Pixels>,
+        crate::Pixels,
+    ) = crate::Window::paint_backdrop_blur;
+
+    fn blur_at(order: DrawOrder, origin_x: f32) -> BackdropBlur {
+        let bounds = Bounds {
+            origin: point(ScaledPixels(origin_x), ScaledPixels(0.0)),
+            size: size(ScaledPixels(40.0), ScaledPixels(40.0)),
+        };
+        BackdropBlur {
+            order,
+            blur_radius: ScaledPixels(8.0),
+            bounds,
+            content_mask: ContentMask { bounds },
+            corner_radii: Corners::default(),
+        }
+    }
+
+    #[test]
+    fn insert_backdrop_blur_stores_order() {
+        let mut scene = Scene::default();
+        scene.insert_backdrop_blur(blur_at(0, 0.0));
+        scene.finish();
+        assert_eq!(scene.backdrop_blurs.len(), 1);
+        assert_eq!(scene.backdrop_blurs[0].order, 0);
+        assert_eq!(scene.backdrop_blurs[0].blur_radius, ScaledPixels(8.0));
+    }
+
+    #[test]
+    fn finish_sorts_backdrop_blurs_by_order() {
+        let mut scene = Scene::default();
+        scene.backdrop_blurs.push(blur_at(3, 80.0));
+        scene.backdrop_blurs.push(blur_at(1, 0.0));
+        scene.finish();
+        let orders: Vec<_> = scene.backdrop_blurs.iter().map(|b| b.order).collect();
+        assert_eq!(orders, vec![1, 3]);
+    }
+
+    #[test]
+    fn insert_backdrop_blur_skips_empty_clip() {
+        let mut scene = Scene::default();
+        scene.insert_backdrop_blur(BackdropBlur {
+            order: 0,
+            blur_radius: ScaledPixels(4.0),
+            bounds: Bounds {
+                origin: point(ScaledPixels(0.0), ScaledPixels(0.0)),
+                size: size(ScaledPixels(10.0), ScaledPixels(10.0)),
+            },
+            content_mask: ContentMask {
+                bounds: Bounds {
+                    origin: point(ScaledPixels(100.0), ScaledPixels(100.0)),
+                    size: size(ScaledPixels(10.0), ScaledPixels(10.0)),
+                },
+            },
+            corner_radii: Corners::default(),
+        });
+        assert!(scene.backdrop_blurs.is_empty());
     }
 }

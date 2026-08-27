@@ -6,7 +6,8 @@ use crate::Inspector;
 use crate::profiler;
 use crate::{
     Action, AnyDrag, AnyElement, AnyImageCache, AnyTooltip, AnyView, App, AppContext, Arena, Asset,
-    AsyncWindowContext, AtlasTile, AvailableSpace, Background, BorderStyle, Bounds, BoxShadow,
+    AsyncWindowContext, AtlasTile, AvailableSpace, BackdropBlur, Background, BorderStyle, Bounds,
+    BoxShadow,
     Capslock, Context, Corners, CursorHideMode, CursorStyle, Decorations, DevicePixels,
     DispatchActionListener, DispatchNodeId, DispatchTree, DisplayId, Edges, Effect, Entity,
     EntityId, EventEmitter, ExternalTexture, FileDropEvent, FontId, Global, GlobalElementId,
@@ -3967,6 +3968,39 @@ impl Window {
         }
 
         result
+    }
+
+    /// Snapshot everything already painted below this order and paint it back
+    /// gaussian-blurred inside the rounded bounds (frosted-glass popovers).
+    /// Inserts a transparent Shadow so the renderer can break its batch here.
+    pub fn paint_backdrop_blur(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        corner_radii: Corners<Pixels>,
+        blur_radius: Pixels,
+    ) {
+        self.invalidator.debug_assert_paint();
+        let scale_factor = self.scale_factor();
+        let content_mask = self.content_mask().scale(scale_factor);
+        self.next_frame.scene.insert_primitive(Shadow {
+            order: 0,
+            blur_radius: ScaledPixels(0.),
+            bounds: bounds.scale(scale_factor),
+            corner_radii: corner_radii.scale(scale_factor),
+            content_mask,
+            color: crate::transparent_black(),
+            element_bounds: bounds.scale(scale_factor),
+            element_corner_radii: corner_radii.scale(scale_factor),
+            inset: 0,
+            pad: 0,
+        });
+        self.next_frame.scene.insert_backdrop_blur(BackdropBlur {
+            order: 0,
+            blur_radius: blur_radius.scale(scale_factor),
+            bounds: bounds.scale(scale_factor),
+            content_mask,
+            corner_radii: corner_radii.scale(scale_factor),
+        });
     }
 
     /// Paint the drop (non-inset) shadows from `shadows` into the scene at the current

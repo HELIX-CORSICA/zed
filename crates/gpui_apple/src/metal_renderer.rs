@@ -753,6 +753,8 @@ impl MetalRenderer {
             Some(metal::MTLClearColor::new(0., 0., 0., alpha)),
         );
 
+        // BackdropBlur: wgpu Linux only. Metal interleave skipped — gpui_apple
+        // diverged from comet gpui_macos (ExternalTexture path must stay).
         for batch in scene.batches() {
             match batch {
                 PrimitiveBatch::Shadows(range) => {
