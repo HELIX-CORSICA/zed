@@ -56,7 +56,7 @@ use std::{
     rc::Rc,
     sync::{
         Arc, Weak,
-        atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering, Ordering::SeqCst},
     },
     time::Duration,
 };
@@ -75,6 +75,53 @@ use crate::util::{
     round_half_toward_zero_f64, round_stroke_to_device_pixel, round_to_device_pixel,
 };
 pub use prompts::*;
+
+static HELIX_LAST_CB: AtomicU64 = AtomicU64::new(0);
+static HELIX_LAST_NP: AtomicU64 = AtomicU64::new(0);
+static HELIX_LAST_DIRTY: AtomicU64 = AtomicU64::new(0);
+static HELIX_LAST_HR: AtomicU64 = AtomicU64::new(0);
+static HELIX_CB0: AtomicU64 = AtomicU64::new(0);
+static HELIX_CBN: AtomicU64 = AtomicU64::new(0);
+static HELIX_REQ: AtomicU64 = AtomicU64::new(0);
+static HELIX_ONNEXT: AtomicU64 = AtomicU64::new(0);
+
+pub fn helix_note_frame_enter(cb: usize, needs_present: bool, dirty: bool, high_rate: bool) {
+    HELIX_LAST_CB.store(cb as u64, Ordering::Relaxed);
+    HELIX_LAST_NP.store(u64::from(needs_present), Ordering::Relaxed);
+    HELIX_LAST_DIRTY.store(u64::from(dirty), Ordering::Relaxed);
+    HELIX_LAST_HR.store(u64::from(high_rate), Ordering::Relaxed);
+    if cb == 0 {
+        HELIX_CB0.fetch_add(1, Ordering::Relaxed);
+    } else {
+        HELIX_CBN.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+pub fn helix_note_request_present() {
+    HELIX_REQ.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn helix_note_on_next_frame() {
+    HELIX_ONNEXT.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn helix_frame_last() -> [u64; 4] {
+    [
+        HELIX_LAST_CB.load(Ordering::Relaxed),
+        HELIX_LAST_NP.load(Ordering::Relaxed),
+        HELIX_LAST_DIRTY.load(Ordering::Relaxed),
+        HELIX_LAST_HR.load(Ordering::Relaxed),
+    ]
+}
+
+pub fn helix_frame_counts() -> [u64; 4] {
+    [
+        HELIX_CB0.load(Ordering::Relaxed),
+        HELIX_CBN.load(Ordering::Relaxed),
+        HELIX_REQ.load(Ordering::Relaxed),
+        HELIX_ONNEXT.load(Ordering::Relaxed),
+    ]
+}
 
 /// Default window size used when no explicit size is provided.
 pub const DEFAULT_WINDOW_SIZE: Size<Pixels> = size(px(1536.), px(1095.));
@@ -1611,6 +1658,12 @@ impl Window {
                 }
                 last_frame_time.set(Some(now));
 
+                helix_note_frame_enter(
+                    next_frame_callbacks.borrow().len(),
+                    needs_present.get(),
+                    invalidator.is_dirty(),
+                    input_rate_tracker.borrow().is_high_rate(),
+                );
                 let pending_next_frame_callbacks = next_frame_callbacks.take();
                 if !pending_next_frame_callbacks.is_empty() {
                     handle
@@ -2354,6 +2407,7 @@ impl Window {
 
     /// Schedule the given closure to be run directly after the current frame is rendered.
     pub fn on_next_frame(&self, callback: impl FnOnce(&mut Window, &mut App) + 'static) {
+        helix_note_on_next_frame();
         RefCell::borrow_mut(&self.next_frame_callbacks).push(Box::new(callback));
         self.platform_window.schedule_frame();
         // Next-frame callbacks create frame demand without dirtying the
@@ -2384,6 +2438,7 @@ impl Window {
     /// chrome tree is unchanged. [`request_animation_frame`] notifies the
     /// current view and rebuilds its ancestors.
     pub fn request_present(&self) {
+        helix_note_request_present();
         self.needs_present.set(true);
         self.platform_window.schedule_frame();
         self.invalidator.wake_platform();

@@ -52,6 +52,11 @@ static X11_SRC: AtomicU64 = AtomicU64::new(0);
 static X11_PARK_NO_EX: AtomicU64 = AtomicU64::new(0);
 static X11_PARK_NO_TM: AtomicU64 = AtomicU64::new(0);
 static X11_PARK_NO_PG: AtomicU64 = AtomicU64::new(0);
+static X11_PARK_NO_CB0: AtomicU64 = AtomicU64::new(0);
+static X11_PARK_NO_CBN: AtomicU64 = AtomicU64::new(0);
+static X11_PARK_NO_NP: AtomicU64 = AtomicU64::new(0);
+static X11_PARK_NO_DIRTY: AtomicU64 = AtomicU64::new(0);
+static X11_PARK_NO_HR: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn x11_src(src: u8) {
     X11_SRC.store(u64::from(src), Ordering::Relaxed);
@@ -66,10 +71,16 @@ fn x11_write_probe() {
     let park_no_ex = X11_PARK_NO_EX.load(Ordering::Relaxed);
     let park_no_tm = X11_PARK_NO_TM.load(Ordering::Relaxed);
     let park_no_pg = X11_PARK_NO_PG.load(Ordering::Relaxed);
+    let park_no_cb0 = X11_PARK_NO_CB0.load(Ordering::Relaxed);
+    let park_no_cbn = X11_PARK_NO_CBN.load(Ordering::Relaxed);
+    let park_no_np = X11_PARK_NO_NP.load(Ordering::Relaxed);
+    let park_no_dirty = X11_PARK_NO_DIRTY.load(Ordering::Relaxed);
+    let park_no_hr = X11_PARK_NO_HR.load(Ordering::Relaxed);
+    let [cb0, cbn, req, onnext] = gpui::helix_frame_counts();
     let _ = std::fs::write(
         "/tmp/helix-x11-frame.json",
         format!(
-            r#"{{"skip":{skip},"park":{park},"sched":{sched},"park_after":{park_after},"park_no":{park_no},"park_no_ex":{park_no_ex},"park_no_tm":{park_no_tm},"park_no_pg":{park_no_pg}}}"#
+            r#"{{"skip":{skip},"park":{park},"sched":{sched},"park_after":{park_after},"park_no":{park_no},"park_no_ex":{park_no_ex},"park_no_tm":{park_no_tm},"park_no_pg":{park_no_pg},"park_no_cb0":{park_no_cb0},"park_no_cbn":{park_no_cbn},"park_no_np":{park_no_np},"park_no_dirty":{park_no_dirty},"park_no_hr":{park_no_hr},"cb0":{cb0},"cbn":{cbn},"req":{req},"onnext":{onnext}}}"#
         ),
     );
 }
@@ -1280,6 +1291,21 @@ impl X11WindowStatePtr {
                     _ => {
                         X11_PARK_NO_PG.fetch_add(1, Ordering::Relaxed);
                     }
+                }
+                let [cb, np, dirty, hr] = gpui::helix_frame_last();
+                if cb == 0 {
+                    X11_PARK_NO_CB0.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    X11_PARK_NO_CBN.fetch_add(1, Ordering::Relaxed);
+                }
+                if np != 0 {
+                    X11_PARK_NO_NP.fetch_add(1, Ordering::Relaxed);
+                }
+                if dirty != 0 {
+                    X11_PARK_NO_DIRTY.fetch_add(1, Ordering::Relaxed);
+                }
+                if hr != 0 {
+                    X11_PARK_NO_HR.fetch_add(1, Ordering::Relaxed);
                 }
             }
             x11_probe(1);
