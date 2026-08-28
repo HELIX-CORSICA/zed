@@ -58,6 +58,15 @@ static X11_PARK_NO_NP: AtomicU64 = AtomicU64::new(0);
 static X11_PARK_NO_DIRTY: AtomicU64 = AtomicU64::new(0);
 static X11_PARK_NO_HR: AtomicU64 = AtomicU64::new(0);
 static X11_SCHED_EMPTY: AtomicU64 = AtomicU64::new(0);
+static X11_PREV_TOOK: AtomicU64 = AtomicU64::new(0);
+static X11_PREV_END: AtomicU64 = AtomicU64::new(0);
+static X11_PREV_SRC: AtomicU64 = AtomicU64::new(0);
+static X11_PREV_SCHED: AtomicU64 = AtomicU64::new(0);
+static X11_PARK_PREV_TOOK: AtomicU64 = AtomicU64::new(0);
+static X11_PARK_PREV_END0: AtomicU64 = AtomicU64::new(0);
+static X11_PARK_PREV_SCHED: AtomicU64 = AtomicU64::new(0);
+static X11_PARK_PREV_TM: AtomicU64 = AtomicU64::new(0);
+static X11_PARK_PREV_PG: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn x11_src(src: u8) {
     X11_SRC.store(u64::from(src), Ordering::Relaxed);
@@ -79,10 +88,15 @@ fn x11_write_probe() {
     let park_no_hr = X11_PARK_NO_HR.load(Ordering::Relaxed);
     let [cb0, cbn, req, onnext] = gpui::helix_frame_counts();
     let sched_empty = X11_SCHED_EMPTY.load(Ordering::Relaxed);
+    let park_prev_took = X11_PARK_PREV_TOOK.load(Ordering::Relaxed);
+    let park_prev_end0 = X11_PARK_PREV_END0.load(Ordering::Relaxed);
+    let park_prev_sched = X11_PARK_PREV_SCHED.load(Ordering::Relaxed);
+    let park_prev_tm = X11_PARK_PREV_TM.load(Ordering::Relaxed);
+    let park_prev_pg = X11_PARK_PREV_PG.load(Ordering::Relaxed);
     let _ = std::fs::write(
         "/tmp/helix-x11-frame.json",
         format!(
-            r#"{{"skip":{skip},"park":{park},"sched":{sched},"park_after":{park_after},"park_no":{park_no},"park_no_ex":{park_no_ex},"park_no_tm":{park_no_tm},"park_no_pg":{park_no_pg},"park_no_cb0":{park_no_cb0},"park_no_cbn":{park_no_cbn},"park_no_np":{park_no_np},"park_no_dirty":{park_no_dirty},"park_no_hr":{park_no_hr},"cb0":{cb0},"cbn":{cbn},"req":{req},"onnext":{onnext},"sched_empty":{sched_empty}}}"#
+            r#"{{"skip":{skip},"park":{park},"sched":{sched},"park_after":{park_after},"park_no":{park_no},"park_no_ex":{park_no_ex},"park_no_tm":{park_no_tm},"park_no_pg":{park_no_pg},"park_no_cb0":{park_no_cb0},"park_no_cbn":{park_no_cbn},"park_no_np":{park_no_np},"park_no_dirty":{park_no_dirty},"park_no_hr":{park_no_hr},"cb0":{cb0},"cbn":{cbn},"req":{req},"onnext":{onnext},"sched_empty":{sched_empty},"park_prev_took":{park_prev_took},"park_prev_end0":{park_prev_end0},"park_prev_sched":{park_prev_sched},"park_prev_tm":{park_prev_tm},"park_prev_pg":{park_prev_pg}}}"#
         ),
     );
 }
@@ -104,6 +118,35 @@ pub(crate) fn x11_probe(kind: u8) {
 
 fn x11_note_sched_call() {
     X11_SCHED_CALL.fetch_add(1, Ordering::Relaxed);
+}
+
+fn x11_note_park_prev() {
+    if X11_PREV_TOOK.load(Ordering::Relaxed) != 0 {
+        X11_PARK_PREV_TOOK.fetch_add(1, Ordering::Relaxed);
+    }
+    if X11_PREV_END.load(Ordering::Relaxed) == 0 {
+        X11_PARK_PREV_END0.fetch_add(1, Ordering::Relaxed);
+    }
+    if X11_PREV_SCHED.load(Ordering::Relaxed) != 0 {
+        X11_PARK_PREV_SCHED.fetch_add(1, Ordering::Relaxed);
+    }
+    match X11_PREV_SRC.load(Ordering::Relaxed) {
+        2 => {
+            X11_PARK_PREV_TM.fetch_add(1, Ordering::Relaxed);
+        }
+        3 => {
+            X11_PARK_PREV_PG.fetch_add(1, Ordering::Relaxed);
+        }
+        _ => {}
+    }
+}
+
+fn x11_store_prev(ended_sched: bool) {
+    let [cb_in, ..] = gpui::helix_frame_last();
+    X11_PREV_TOOK.store(u64::from(cb_in > 0), Ordering::Relaxed);
+    X11_PREV_END.store(gpui::helix_frame_cb_end(), Ordering::Relaxed);
+    X11_PREV_SRC.store(X11_SRC.load(Ordering::Relaxed), Ordering::Relaxed);
+    X11_PREV_SCHED.store(u64::from(ended_sched), Ordering::Relaxed);
 }
 
 use super::{X11Display, XINPUT_ALL_DEVICE_GROUPS, XINPUT_ALL_DEVICES};
@@ -1280,6 +1323,7 @@ impl X11WindowStatePtr {
             self.frame_loop.set(X11FrameLoop::Scheduled);
             x11_probe(2);
             self.ping_frame();
+            x11_store_prev(true);
         } else {
             self.frame_loop.set(X11FrameLoop::Parked);
             if X11_SCHED_CALL.load(Ordering::Relaxed) > sched0 {
@@ -1312,8 +1356,10 @@ impl X11WindowStatePtr {
                 if hr != 0 {
                     X11_PARK_NO_HR.fetch_add(1, Ordering::Relaxed);
                 }
+                x11_note_park_prev();
             }
             x11_probe(1);
+            x11_store_prev(false);
         }
     }
 
