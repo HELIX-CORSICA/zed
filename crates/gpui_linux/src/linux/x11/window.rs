@@ -1322,7 +1322,6 @@ impl X11WindowStatePtr {
             }
             self.frame_loop.set(X11FrameLoop::Scheduled);
             x11_probe(2);
-            self.ping_frame();
             x11_store_prev(true);
         } else {
             self.frame_loop.set(X11FrameLoop::Parked);
