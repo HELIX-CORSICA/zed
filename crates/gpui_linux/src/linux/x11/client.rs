@@ -733,6 +733,7 @@ impl X11Client {
                         Instant::now().saturating_duration_since(t) < Duration::from_millis(40)
                     }) && !window.has_scheduled_frame();
                     if !skip {
+                        super::window::x11_src(1);
                         window.refresh(RequestFrameOptions {
                             require_presentation: true,
                             force_render: false,
@@ -2034,6 +2035,7 @@ impl X11ClientState {
                             let window = window.window.clone();
                             drop(state);
                             if !skip_timer || force_render || window.has_scheduled_frame() {
+                                super::window::x11_src(2);
                                 window.refresh(RequestFrameOptions {
                                     require_presentation: false,
                                     force_render,

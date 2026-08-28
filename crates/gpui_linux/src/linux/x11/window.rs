@@ -48,6 +48,14 @@ static X11_SCHED: AtomicU64 = AtomicU64::new(0);
 static X11_SCHED_CALL: AtomicU64 = AtomicU64::new(0);
 static X11_PARK_AFTER: AtomicU64 = AtomicU64::new(0);
 static X11_PARK_NO: AtomicU64 = AtomicU64::new(0);
+static X11_SRC: AtomicU64 = AtomicU64::new(0);
+static X11_PARK_NO_EX: AtomicU64 = AtomicU64::new(0);
+static X11_PARK_NO_TM: AtomicU64 = AtomicU64::new(0);
+static X11_PARK_NO_PG: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn x11_src(src: u8) {
+    X11_SRC.store(u64::from(src), Ordering::Relaxed);
+}
 
 fn x11_write_probe() {
     let skip = X11_SKIP.load(Ordering::Relaxed);
@@ -55,10 +63,13 @@ fn x11_write_probe() {
     let sched = X11_SCHED.load(Ordering::Relaxed);
     let park_after = X11_PARK_AFTER.load(Ordering::Relaxed);
     let park_no = X11_PARK_NO.load(Ordering::Relaxed);
+    let park_no_ex = X11_PARK_NO_EX.load(Ordering::Relaxed);
+    let park_no_tm = X11_PARK_NO_TM.load(Ordering::Relaxed);
+    let park_no_pg = X11_PARK_NO_PG.load(Ordering::Relaxed);
     let _ = std::fs::write(
         "/tmp/helix-x11-frame.json",
         format!(
-            r#"{{"skip":{skip},"park":{park},"sched":{sched},"park_after":{park_after},"park_no":{park_no}}}"#
+            r#"{{"skip":{skip},"park":{park},"sched":{sched},"park_after":{park_after},"park_no":{park_no},"park_no_ex":{park_no_ex},"park_no_tm":{park_no_tm},"park_no_pg":{park_no_pg}}}"#
         ),
     );
 }
@@ -1259,6 +1270,17 @@ impl X11WindowStatePtr {
                 X11_PARK_AFTER.fetch_add(1, Ordering::Relaxed);
             } else {
                 X11_PARK_NO.fetch_add(1, Ordering::Relaxed);
+                match X11_SRC.load(Ordering::Relaxed) {
+                    1 => {
+                        X11_PARK_NO_EX.fetch_add(1, Ordering::Relaxed);
+                    }
+                    2 => {
+                        X11_PARK_NO_TM.fetch_add(1, Ordering::Relaxed);
+                    }
+                    _ => {
+                        X11_PARK_NO_PG.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
             }
             x11_probe(1);
         }
@@ -1266,6 +1288,7 @@ impl X11WindowStatePtr {
 
     pub fn scheduled_frame_fired(&self) {
         if self.frame_loop.get() == X11FrameLoop::Scheduled {
+            x11_src(3);
             let force_render =
                 std::mem::take(&mut self.state.borrow_mut().force_render_after_recovery);
             self.refresh(RequestFrameOptions {
