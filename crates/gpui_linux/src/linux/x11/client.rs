@@ -2033,12 +2033,12 @@ impl X11ClientState {
                             drop(inner);
                             let window = window.window.clone();
                             drop(state);
-                            if force_render || window.has_scheduled_frame() {
+                            if !skip_timer || force_render || window.has_scheduled_frame() {
                                 window.refresh(RequestFrameOptions {
                                     require_presentation: false,
                                     force_render,
                                 });
-                            } else if skip_timer {
+                            } else {
                                 super::window::x11_probe(0);
                             }
                         }
