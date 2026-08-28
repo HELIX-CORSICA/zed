@@ -80,6 +80,7 @@ static HELIX_LAST_CB: AtomicU64 = AtomicU64::new(0);
 static HELIX_LAST_NP: AtomicU64 = AtomicU64::new(0);
 static HELIX_LAST_DIRTY: AtomicU64 = AtomicU64::new(0);
 static HELIX_LAST_HR: AtomicU64 = AtomicU64::new(0);
+static HELIX_LAST_CB_END: AtomicU64 = AtomicU64::new(0);
 static HELIX_CB0: AtomicU64 = AtomicU64::new(0);
 static HELIX_CBN: AtomicU64 = AtomicU64::new(0);
 static HELIX_REQ: AtomicU64 = AtomicU64::new(0);
@@ -95,6 +96,14 @@ pub fn helix_note_frame_enter(cb: usize, needs_present: bool, dirty: bool, high_
     } else {
         HELIX_CBN.fetch_add(1, Ordering::Relaxed);
     }
+}
+
+pub fn helix_note_frame_exit(cb: usize) {
+    HELIX_LAST_CB_END.store(cb as u64, Ordering::Relaxed);
+}
+
+pub fn helix_frame_cb_end() -> u64 {
+    HELIX_LAST_CB_END.load(Ordering::Relaxed)
 }
 
 pub fn helix_note_request_present() {
@@ -1710,6 +1719,7 @@ impl Window {
                         {
                             window.platform_window.schedule_frame();
                         }
+                        helix_note_frame_exit(window.next_frame_callbacks.borrow().len());
                     })
                     .log_err();
 

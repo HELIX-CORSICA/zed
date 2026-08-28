@@ -57,6 +57,7 @@ static X11_PARK_NO_CBN: AtomicU64 = AtomicU64::new(0);
 static X11_PARK_NO_NP: AtomicU64 = AtomicU64::new(0);
 static X11_PARK_NO_DIRTY: AtomicU64 = AtomicU64::new(0);
 static X11_PARK_NO_HR: AtomicU64 = AtomicU64::new(0);
+static X11_SCHED_EMPTY: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn x11_src(src: u8) {
     X11_SRC.store(u64::from(src), Ordering::Relaxed);
@@ -77,10 +78,11 @@ fn x11_write_probe() {
     let park_no_dirty = X11_PARK_NO_DIRTY.load(Ordering::Relaxed);
     let park_no_hr = X11_PARK_NO_HR.load(Ordering::Relaxed);
     let [cb0, cbn, req, onnext] = gpui::helix_frame_counts();
+    let sched_empty = X11_SCHED_EMPTY.load(Ordering::Relaxed);
     let _ = std::fs::write(
         "/tmp/helix-x11-frame.json",
         format!(
-            r#"{{"skip":{skip},"park":{park},"sched":{sched},"park_after":{park_after},"park_no":{park_no},"park_no_ex":{park_no_ex},"park_no_tm":{park_no_tm},"park_no_pg":{park_no_pg},"park_no_cb0":{park_no_cb0},"park_no_cbn":{park_no_cbn},"park_no_np":{park_no_np},"park_no_dirty":{park_no_dirty},"park_no_hr":{park_no_hr},"cb0":{cb0},"cbn":{cbn},"req":{req},"onnext":{onnext}}}"#
+            r#"{{"skip":{skip},"park":{park},"sched":{sched},"park_after":{park_after},"park_no":{park_no},"park_no_ex":{park_no_ex},"park_no_tm":{park_no_tm},"park_no_pg":{park_no_pg},"park_no_cb0":{park_no_cb0},"park_no_cbn":{park_no_cbn},"park_no_np":{park_no_np},"park_no_dirty":{park_no_dirty},"park_no_hr":{park_no_hr},"cb0":{cb0},"cbn":{cbn},"req":{req},"onnext":{onnext},"sched_empty":{sched_empty}}}"#
         ),
     );
 }
@@ -1272,6 +1274,9 @@ impl X11WindowStatePtr {
         }
         self.state.borrow_mut().last_refresh_end = Some(Instant::now());
         if self.frame_loop.get() == X11FrameLoop::RescheduleRequested {
+            if gpui::helix_frame_cb_end() == 0 {
+                X11_SCHED_EMPTY.fetch_add(1, Ordering::Relaxed);
+            }
             self.frame_loop.set(X11FrameLoop::Scheduled);
             x11_probe(2);
             self.ping_frame();
