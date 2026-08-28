@@ -1316,15 +1316,17 @@ impl X11WindowStatePtr {
             self.callbacks.borrow_mut().request_frame = Some(fun);
         }
         self.state.borrow_mut().last_refresh_end = Some(Instant::now());
-        if self.frame_loop.get() == X11FrameLoop::RescheduleRequested {
-            if gpui::helix_frame_cb_end() == 0 {
-                X11_SCHED_EMPTY.fetch_add(1, Ordering::Relaxed);
-            }
+        if self.frame_loop.get() == X11FrameLoop::RescheduleRequested
+            && gpui::helix_frame_cb_end() != 0
+        {
             self.frame_loop.set(X11FrameLoop::Scheduled);
             x11_probe(2);
             self.ping_frame();
             x11_store_prev(true);
         } else {
+            if self.frame_loop.get() == X11FrameLoop::RescheduleRequested {
+                X11_SCHED_EMPTY.fetch_add(1, Ordering::Relaxed);
+            }
             self.frame_loop.set(X11FrameLoop::Parked);
             if X11_SCHED_CALL.load(Ordering::Relaxed) > sched0 {
                 X11_PARK_AFTER.fetch_add(1, Ordering::Relaxed);
